@@ -52,3 +52,7 @@ prompt
 server.log
 # Skills directory
 /skills/
+# runtime data
+db/*.db
+db/*.db-journal
+worklog.md
