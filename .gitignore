@@ -56,3 +56,8 @@ server.log
 db/*.db
 db/*.db-journal
 worklog.md
+
+# environment
+.env
+.env.local
+!.env.example
