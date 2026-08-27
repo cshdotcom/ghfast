@@ -45,6 +45,22 @@ const STRIP_RESPONSE_HEADERS = [
   'cross-origin-resource-policy',
 ];
 
+/** 浏览器遥测/广告上报端点:命中后直接短路 204,不出网也不落库(消音红错、降噪省流量) */
+const TELEMETRY_RULES: Array<{ host: RegExp; path?: RegExp }> = [
+  { host: /^(www\.)?collector\.github\.com$/ },
+  { host: /^api\.github\.com$/, path: /^\/_private\// },
+  { host: /^github\.com$/, path: /^\/in-product-messaging\// },
+  { host: /(\.|^)(googletagmanager|googleadservices|doubleclick|google-analytics)\.(com|net)$/i },
+  { host: /^analytics\.google\.com$/i },
+  { host: /(\.|^)google\.com(\.hk)?$/i, path: /^\/(pagead($|\/)|gen_204)/i },
+];
+
+function isTelemetry(url: URL): boolean {
+  const h = url.hostname.toLowerCase();
+  const p = url.pathname;
+  return TELEMETRY_RULES.some((r) => r.host.test(h) && (!r.path || r.path.test(p)));
+}
+
 async function handleProxy(
   req: NextRequest,
   ctx: { params: Promise<{ scheme?: string; rest?: string[] }> }
@@ -77,6 +93,14 @@ async function handleProxy(
     url.searchParams.set(k, v);
   }
 
+  // 遥测/广告上报直接短路:这些请求对加速站毫无价值,且常带登录态引发 401/431 红错
+  if (isTelemetry(url)) {
+    return new NextResponse(null, {
+      status: 204,
+      headers: { 'cache-control': 'no-store', 'x-ghfast-telemetry': 'blocked' },
+    });
+  }
+
   // 挑选需要转发的请求头(过滤逐跳头,避免转发受限头时报错)
   const forwardHeaders: Record<string, string> = {};
   for (const [k, v] of req.headers.entries()) {
@@ -87,6 +111,17 @@ async function handleProxy(
   forwardHeaders['user-agent'] =
     'Mozilla/5.0 (compatible; GHFast/1.0; +github-accelerator)';
   forwardHeaders['accept-encoding'] = 'identity';
+
+  // 兑底:历史存量 Cookie 污染积累会导致头部超限引发 431,丢弃比请求失败更友好。
+  // 根治手段是 Set-Cookie 的"虚拟路径分域"(见 sanitizeSetCookie)
+  const rawCookie = forwardHeaders['cookie'];
+  if (typeof rawCookie === 'string' && rawCookie.length > 8000) {
+    console.warn(
+      `[GHFast] cookie header too large (${rawCookie.length}B), dropping for`,
+      url.host
+    );
+    delete forwardHeaders['cookie'];
+  }
 
   const method = req.method === 'HEAD' ? 'HEAD' : req.method;
 
@@ -134,12 +169,14 @@ async function handleProxy(
 
     const headers = new Headers(pickUpstreamHeaders(upstream.headers));
     headers.set('x-proxied-by', 'GHFast');
-    // Set-Cookie 清洗透传(去掉 Domain=/Secure/SameSite=None),登录态可保留在本站域下
+    // Set-Cookie 清洗透传并按虚拟路径分域(Path=/gh/<scheme>/<host>),
+    // 各上游主机的 Cookie 互不携带,登录态保留且不会互相膨胀引发 431
+    const proxyBase = `/gh/${effectiveUrl.protocol.slice(0, -1)}/${effectiveUrl.host}`;
     const setCookies = typeof upstream.headers.getSetCookie === 'function'
       ? upstream.headers.getSetCookie()
       : [];
     for (const c of setCookies) {
-      headers.append('set-cookie', sanitizeSetCookie(c));
+      headers.append('set-cookie', sanitizeSetCookie(c, proxyBase));
     }
 
     // 记录下载到数据库(await 保证落库再返回流)

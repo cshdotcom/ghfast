@@ -64,22 +64,33 @@ export function normalizeInput(raw: string): URL | null {
   }
 }
 
-/** 清洗上游 Set-Cookie,使 Cookie 落在本站域名下(登录态可保留) */
-export function sanitizeSetCookie(cookie: string): string {
+/** 清洗上游 Set-Cookie,使 Cookie 落在本站域名下的"虚拟路径分域"内(登录态可保留且互不污染)
+ *
+ * proxyBase 如 /gh/https/github.com —— 强制 Path=该虚拟前缀,
+ * 使 github.com 与 api.github.com 等上游各自主机的 Cookie 互不携带(RFC6265 path-match),
+ * 避免全部混在同一本站域名下互相膨胀导致 431 Request Header Fields Too Large。
+ */
+export function sanitizeSetCookie(cookie: string, proxyBase?: string): string {
   const parts = cookie.split(';').map((p) => p.trim());
   const out: string[] = [];
   let sawSameSite = false;
   for (const p of parts) {
     if (!p) continue;
-    if (/^domain=/i.test(p)) continue; // 跨域 Cookie 被浏览器拒绝,改为落本站
+    if (/^domain=/i.test(p)) continue; // 跨域 Cookie 被浏览器拒绝,改为落在本站虚拟路径
     if (/^secure$/i.test(p)) continue; // 本地 http 预览时 Secure Cookie 会被丢弃
     if (/^samesite=/i.test(p)) {
       sawSameSite = true;
       out.push('SameSite=Lax');
       continue;
     }
+    if (/^path=/i.test(p)) {
+      // 有分域上下文时忽略上游 Path,统一由 proxyBase 决定;无上下文则保留
+      if (!proxyBase) out.push(p);
+      continue;
+    }
     out.push(p);
   }
+  if (proxyBase) out.push(`Path=${proxyBase}`);
   if (!sawSameSite && out.length) out.push('SameSite=Lax');
   return out.join('; ');
 }
