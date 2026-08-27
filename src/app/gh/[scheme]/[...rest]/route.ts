@@ -5,7 +5,7 @@ import {
   pickUpstreamHeaders,
   parseGithubUrl,
 } from '@/lib/github-proxy';
-import { rewriteHtml, rewriteCss } from '@/lib/html-rewrite';
+import { rewriteHtml, rewriteCss, rewriteXmlLike } from '@/lib/html-rewrite';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -160,20 +160,28 @@ async function handleProxy(
       });
     } catch { /* 记录失败不影响下载 */ }
 
-    // 页面代理浏览:HTML/CSS 响应做链接改写,让点击/加载行为留在代理内
+    // 页面代理浏览:HTML/CSS/manifest/XML 响应做内容改写,让点击/加载行为留在代理内
+    // manifest 单独处理:Chrome 解析 Web App Manifest 图标不受任何 JS 钩子约束,必须服务端改写
     const ct = (upstream.headers.get('content-type') ?? '').toLowerCase();
+    const isHtml = ct.includes('text/html');
+    const isCss = ct.includes('text/css');
+    const isManifest = ct.includes('application/manifest') || url.pathname.endsWith('/manifest.json');
+    const isXml =
+      ct.includes('xml') || /\.(atom|rss|xml)$/.test(url.pathname) === true;
     const declaredLen = Number(upstream.headers.get('content-length') ?? '0');
     const rewriteable =
       upstream.body != null &&
       method !== 'HEAD' &&
-      (ct.includes('text/html') || ct.includes('text/css')) &&
+      (isHtml || isCss || isManifest || isXml) &&
       (declaredLen === 0 || declaredLen < 10 * 1024 * 1024);
 
     if (rewriteable) {
       const raw = await upstream.text();
-      const rewritten = ct.includes('text/html')
-        ? rewriteHtml(raw, effectiveUrl)
-        : rewriteCss(raw, effectiveUrl);
+      let rewritten: string;
+      if (isHtml) rewritten = rewriteHtml(raw, effectiveUrl);
+      else if (isCss) rewritten = rewriteCss(raw, effectiveUrl);
+      else if (isManifest) rewritten = rewriteXmlLike(raw);
+      else rewritten = rewriteXmlLike(raw); // atom/rss/xml 内容直链改写
       const h = new Headers(headers);
       for (const k of STRIP_RESPONSE_HEADERS) h.delete(k);
       h.delete('content-length');
@@ -189,6 +197,7 @@ async function handleProxy(
       headers,
     });
   } catch (err) {
+    console.error('[GHFast] upstream error:', url.toString(), err);
     const msg =
       err instanceof Error && err.name === 'TimeoutError'
         ? '连接上游站点超时,请稍后重试'
