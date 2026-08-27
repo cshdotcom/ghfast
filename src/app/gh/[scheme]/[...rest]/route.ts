@@ -5,6 +5,7 @@ import {
   pickUpstreamHeaders,
   parseGithubUrl,
 } from '@/lib/github-proxy';
+import { rewriteHtml, rewriteCss } from '@/lib/html-rewrite';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,6 +34,16 @@ const HOP_HEADERS = new Set([
   'te',
   'trailer',
 ]);
+
+/** 页面代理浏览:剥离会阻磗改写页面的安全头 */
+const STRIP_RESPONSE_HEADERS = [
+  'content-security-policy',
+  'content-security-policy-report-only',
+  'x-frame-options',
+  'cross-origin-opener-policy',
+  'cross-origin-embedder-policy',
+  'cross-origin-resource-policy',
+];
 
 async function handleProxy(
   req: NextRequest,
@@ -144,6 +155,26 @@ async function handleProxy(
     if (method === 'HEAD') {
       return new NextResponse(null, { status: 200, headers });
     }
+
+    // 页面代理浏览:HTML/CSS 响应做链接改写,让点击/加载行为留在代理内
+    const ct = (upstream.headers.get('content-type') ?? '').toLowerCase();
+    const declaredLen = Number(upstream.headers.get('content-length') ?? '0');
+    const rewriteable =
+      upstream.body != null &&
+      (ct.includes('text/html') || ct.includes('text/css')) &&
+      (declaredLen === 0 || declaredLen < 10 * 1024 * 1024);
+
+    if (rewriteable) {
+      const raw = await upstream.text();
+      const rewritten = ct.includes('text/html')
+        ? rewriteHtml(raw, url)
+        : rewriteCss(raw, url);
+      const h = new Headers(headers);
+      for (const k of STRIP_RESPONSE_HEADERS) h.delete(k);
+      h.delete('content-length');
+      return new NextResponse(rewritten, { status: upstream.status, headers: h });
+    }
+
     return new NextResponse(upstream.body, {
       status: 200,
       headers,

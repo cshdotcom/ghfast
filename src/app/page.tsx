@@ -10,6 +10,7 @@ import {
   FileText,
   Github,
   GitBranch,
+  Globe,
   History,
   Link2,
   Loader2,
@@ -286,6 +287,7 @@ export default function HomePage() {
           <p className="mt-3 text-sm sm:text-base text-zinc-400 max-w-xl mx-auto">
             粘贴任意 GitHub 链接,本站将充当临时代理服务器为你流式加速转发:
             Releases、仓库压缩包、Raw 文件、Gist 与 git clone 全支持。
+            还能直接在线浏览 GitHub 页面 —— 页内链接自动改写,冲浪不跳出。
           </p>
         </section>
 
@@ -491,7 +493,9 @@ export default function HomePage() {
               { icon: FileText, title: 'Raw 文件', desc: 'raw.githubusercontent 直链文件', color: 'text-sky-300 bg-sky-500/10 border-sky-500/20' },
               { icon: Braces, title: 'Gist 片段', desc: 'gist 上的代码片段文件', color: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20' },
               { icon: GitBranch, title: 'Git Clone', desc: '智能 HTTP 协议透传克隆', color: 'text-teal-300 bg-teal-500/10 border-teal-500/20' },
+              { icon: Globe, title: '整页代理浏览', desc: '网页内链接自动改写,冲浪不跳出', color: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
               { icon: Zap, title: '断点续传', desc: '透明转发 Range 分段请求', color: 'text-orange-300 bg-orange-500/10 border-orange-500/20' },
+              { icon: ShieldCheck, title: '白名单安全', desc: '仅代理 GitHub 系域名,防 SSRF', color: 'text-lime-300 bg-lime-500/10 border-lime-500/20' },
             ].map((t) => (
               <Card
                 key={t.title}

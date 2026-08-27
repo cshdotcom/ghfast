@@ -29,11 +29,12 @@ export interface ParsedGithubUrl {
   fileName?: string;
 }
 
-/** 允许代理的域名后缀白名单 */
+/** 允许代理的域名后缀白名单(github-cloud 为 Release 资产预览图床,精确主机) */
 const ALLOWED_SUFFIXES = [
   'github.com',
   'githubusercontent.com',
   'githubassets.com',
+  'github-cloud.s3.amazonaws.com',
 ];
 
 /** 判断主机名是否在 GitHub 白名单内 */

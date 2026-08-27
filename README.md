@@ -14,6 +14,7 @@
   - Gist 片段:`gist.githubusercontent.com/...`
   - Codeload 快照:`codeload.github.com/...`
   - Git Clone:智能 HTTP 协议(GET/POST/HEAD)完整透传
+- **🌐 整页代理浏览** — 直接打开代理地址即可浏览 GitHub 页面,页内链接/资源自动改写留在代理内,根相对路径由兜底路由无缝接管
 - **⏯️ 断点续传** — 透明转发 `Range` 请求头,`wget -c` / 下载工具分段拉取无感配合
 - **🔗 加速直链可分享** — 解析后生成 `/gh/https/<原始地址>` 形式的直链,可直接用于脚本、CI、下载工具
 - **🧰 命令行片段** — 一键复制 `wget` / `curl` / `git clone` 命令
@@ -83,14 +84,24 @@ wget -O file.zip "https://你的域名/gh/https/github.com/o/r/releases/download
 
 # git clone 加速:
 git clone "https://你的域名/gh/https/github.com/octocat/Hello-World"
+
+# 整页代理浏览(浏览器直接打开):
+https://你的域名/gh/https/github.com/torvalds/linux
 ```
+
+### 页面代理浏览说明
+
+- 页内 `href/src/action/srcset` 及 CSS `url()`、内嵌脚本中的白名单域链接会自动改写为代理路径
+- 未匹配本站路由的根相对路径(如 `/features`)由兜底路由 308 接回代理
+- 已知限制:登录态受 Cookie 域限制无法完整保持;少数硬编码绝对地址的 JS 请求仍直连原站
 
 ## 📁 项目结构
 
 ```text
 src/
 ├── app/
-│   ├── gh/[scheme]/[...rest]/route.ts   # 核心流式反向代理
+│   ├── gh/[scheme]/[...rest]/route.ts   # 核心流式反向代理 + HTML/CSS 改写
+│   ├── [...path]/route.ts               # 兜底 308 → 页面代理浏览不跳出
 │   ├── api/
 │   │   ├── analyze/route.ts             # 链接解析 + HEAD 元信息探测
 │   │   ├── history/route.ts             # 下载历史
