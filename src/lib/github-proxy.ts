@@ -16,7 +16,8 @@ export type GithubLinkType =
   | 'raw'
   | 'gist'
   | 'codeload'
-  | 'clone';
+  | 'clone'
+  | 'other';
 
 export interface ParsedGithubUrl {
   /** 归一化后的原始地址(带协议) */
@@ -29,20 +30,9 @@ export interface ParsedGithubUrl {
   fileName?: string;
 }
 
-/** 允许代理的域名后缀白名单(github-cloud 为 Release 资产预览图床,精确主机) */
-const ALLOWED_SUFFIXES = [
-  'github.com',
-  'githubusercontent.com',
-  'githubassets.com',
-  'github-cloud.s3.amazonaws.com',
-];
-
-/** 判断主机名是否在 GitHub 白名单内 */
-export function isAllowedHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return ALLOWED_SUFFIXES.some(
-    (s) => host === s || host.endsWith('.' + s)
-  );
+/** 允许代理的目标协议限制(任意域名,但仅限 http/https) */
+function isValidTarget(url: URL): boolean {
+  return url.protocol === 'https:' || url.protocol === 'http:';
 }
 
 /** 规范化用户输入 → 可解析的 URL(容错处理) */
@@ -66,12 +56,32 @@ export function normalizeInput(raw: string): URL | null {
 
   try {
     const url = new URL(input);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    if (!isAllowedHost(url.hostname)) return null;
+    if (!isValidTarget(url)) return null;
+    // 域名不设限:支持任意站点通过代理访问
     return url;
   } catch {
     return null;
   }
+}
+
+/** 清洗上游 Set-Cookie,使 Cookie 落在本站域名下(登录态可保留) */
+export function sanitizeSetCookie(cookie: string): string {
+  const parts = cookie.split(';').map((p) => p.trim());
+  const out: string[] = [];
+  let sawSameSite = false;
+  for (const p of parts) {
+    if (!p) continue;
+    if (/^domain=/i.test(p)) continue; // 跨域 Cookie 被浏览器拒绝,改为落本站
+    if (/^secure$/i.test(p)) continue; // 本地 http 预览时 Secure Cookie 会被丢弃
+    if (/^samesite=/i.test(p)) {
+      sawSameSite = true;
+      out.push('SameSite=Lax');
+      continue;
+    }
+    out.push(p);
+  }
+  if (!sawSameSite && out.length) out.push('SameSite=Lax');
+  return out.join('; ');
 }
 
 function extractFileName(pathname: string): string | undefined {
@@ -167,6 +177,7 @@ export const TYPE_LABELS: Record<GithubLinkType, string> = {
   gist: 'Gist 片段',
   codeload: 'Codeload 快照',
   clone: 'Git 仓库 / Clone',
+  other: '通用网址 / 网页代理',
 };
 
 /** 从 fetch Response 中挑出需要回传给客户端的响应头 */

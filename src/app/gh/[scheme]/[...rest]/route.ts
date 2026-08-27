@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
-  isAllowedHost,
+  sanitizeSetCookie,
   pickUpstreamHeaders,
   parseGithubUrl,
 } from '@/lib/github-proxy';
@@ -70,12 +70,7 @@ async function handleProxy(
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     return NextResponse.json({ error: '仅支持 http/https 协议' }, { status: 400 });
   }
-  if (!isAllowedHost(url.hostname)) {
-    return NextResponse.json(
-      { error: `域名 ${url.hostname} 不在 GitHub 白名单内` },
-      { status: 403 }
-    );
-  }
+  // 域名不设限:任意 http/https 站点均可通过代理访问
 
   // 转发额外查询参数(git 智能协议需要)
   for (const [k, v] of req.nextUrl.searchParams.entries()) {
@@ -107,12 +102,16 @@ async function handleProxy(
       signal: AbortSignal.timeout(120_000),
     });
 
-    if (!upstream.ok && upstream.status >= 400) {
+    // 重定向跟随后的真实地址(资源可能落在 CDN/子域上),作为改写与记录的基准
+    const effectiveUrl = new URL(upstream.url || url.toString());
+    const ctEarly = (upstream.headers.get('content-type') ?? '').toLowerCase();
+
+    if (!upstream.ok && upstream.status >= 400 && !ctEarly.includes('text/html')) {
       try {
         await db.downloadRecord.create({
           data: {
-            sourceUrl: url.toString(),
-            proxyPath: `/gh/${proto}/${url.host}${url.pathname}`,
+            sourceUrl: effectiveUrl.toString(),
+            proxyPath: `/gh/${effectiveUrl.protocol.slice(0, -1)}/${effectiveUrl.host}${effectiveUrl.pathname}`,
             type: 'other',
             status: 'error',
           },
@@ -123,25 +122,34 @@ async function handleProxy(
         upstream.status === 404
           ? '文件不存在或仓库为私有'
           : upstream.status === 403
-            ? 'GitHub 拒绝访问(限流或私有资源)'
+            ? '上游拒绝访问(限流或私有资源)'
             : '上游返回错误';
       return NextResponse.json(
         { error: detail, status: upstream.status },
         { status: upstream.status }
       );
     }
+    // 注:text/html 的 404/403/500 等错误页不再吞掉,原样改写后按原状态码回传,
+    // 保持网页代理的浏览体验(如 GitHub 的页面指引内链可继续点击)
 
     const headers = new Headers(pickUpstreamHeaders(upstream.headers));
     headers.set('x-proxied-by', 'GHFast');
+    // Set-Cookie 清洗透传(去掉 Domain=/Secure/SameSite=None),登录态可保留在本站域下
+    const setCookies = typeof upstream.headers.getSetCookie === 'function'
+      ? upstream.headers.getSetCookie()
+      : [];
+    for (const c of setCookies) {
+      headers.append('set-cookie', sanitizeSetCookie(c));
+    }
 
     // 记录下载到数据库(await 保证落库再返回流)
-    const parsed = parseGithubUrl(url.toString());
+    const parsed = parseGithubUrl(effectiveUrl.toString());
     const sizeHeader = upstream.headers.get('content-length');
     try {
       await db.downloadRecord.create({
         data: {
-          sourceUrl: url.toString(),
-          proxyPath: `/gh/${proto}/${url.host}${url.pathname}`,
+          sourceUrl: effectiveUrl.toString(),
+          proxyPath: `/gh/${effectiveUrl.protocol.slice(0, -1)}/${effectiveUrl.host}${effectiveUrl.pathname}`,
           type: parsed?.type ?? 'other',
           owner: parsed?.owner ?? null,
           repo: parsed?.repo ?? null,
@@ -152,38 +160,39 @@ async function handleProxy(
       });
     } catch { /* 记录失败不影响下载 */ }
 
-    if (method === 'HEAD') {
-      return new NextResponse(null, { status: 200, headers });
-    }
-
     // 页面代理浏览:HTML/CSS 响应做链接改写,让点击/加载行为留在代理内
     const ct = (upstream.headers.get('content-type') ?? '').toLowerCase();
     const declaredLen = Number(upstream.headers.get('content-length') ?? '0');
     const rewriteable =
       upstream.body != null &&
+      method !== 'HEAD' &&
       (ct.includes('text/html') || ct.includes('text/css')) &&
       (declaredLen === 0 || declaredLen < 10 * 1024 * 1024);
 
     if (rewriteable) {
       const raw = await upstream.text();
       const rewritten = ct.includes('text/html')
-        ? rewriteHtml(raw, url)
-        : rewriteCss(raw, url);
+        ? rewriteHtml(raw, effectiveUrl)
+        : rewriteCss(raw, effectiveUrl);
       const h = new Headers(headers);
       for (const k of STRIP_RESPONSE_HEADERS) h.delete(k);
       h.delete('content-length');
       return new NextResponse(rewritten, { status: upstream.status, headers: h });
     }
 
+    if (method === 'HEAD') {
+      return new NextResponse(null, { status: upstream.status, headers });
+    }
+
     return new NextResponse(upstream.body, {
-      status: 200,
+      status: upstream.status,
       headers,
     });
   } catch (err) {
     const msg =
       err instanceof Error && err.name === 'TimeoutError'
-        ? '连接 GitHub 超时,请稍后重试'
-        : '代理请求失败,GitHub 可能暂时不可达';
+        ? '连接上游站点超时,请稍后重试'
+        : '代理请求失败,目标站点可能暂时不可达';
     return NextResponse.json({ error: msg }, { status: 502 });
   }
 }

@@ -71,6 +71,7 @@ const TYPE_ICONS: Record<string, React.ElementType> = {
   gist: Braces,
   codeload: Archive,
   clone: GitBranch,
+  other: Globe,
 };
 
 const TYPE_BADGE_STYLES: Record<string, string> = {
@@ -80,6 +81,7 @@ const TYPE_BADGE_STYLES: Record<string, string> = {
   gist: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
   codeload: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
   clone: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+  other: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
 };
 
 const EXAMPLES = [
@@ -97,6 +99,11 @@ const EXAMPLES = [
     label: 'Raw 文件',
     icon: FileText,
     url: 'https://raw.githubusercontent.com/torvalds/linux/master/README',
+  },
+  {
+    label: '网页代理 · 任意站',
+    icon: Globe,
+    url: 'https://github.com/login',
   },
 ];
 
@@ -285,9 +292,9 @@ export default function HomePage() {
             </span>
           </h2>
           <p className="mt-3 text-sm sm:text-base text-zinc-400 max-w-xl mx-auto">
-            粘贴任意 GitHub 链接,本站将充当临时代理服务器为你流式加速转发:
+            粘贴 GitHub 链接或任意网址,本站充当临时代理服务器为你流式加速转发:
             Releases、仓库压缩包、Raw 文件、Gist 与 git clone 全支持。
-            还能直接在线浏览 GitHub 页面 —— 页内链接自动改写,冲浪不跳出。
+            还能整页代理浏览任意网站 —— 页内链接与 JS 动态资源自动钩住改写,冲浪不跳出。
           </p>
         </section>
 
@@ -299,9 +306,9 @@ export default function HomePage() {
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="粘贴 GitHub 文件或仓库链接,如 https://github.com/user/repo/releases/download/..."
+                placeholder="粘贴 GitHub 链接或任意网址,如 https://github.com/user/repo/releases/download/..."
                 className="pl-9 h-11 font-mono text-xs sm:text-sm bg-zinc-950/70 border-white/10 focus-visible:ring-emerald-500/50 placeholder:text-zinc-600 placeholder:font-sans"
-                aria-label="GitHub 链接输入框"
+                aria-label="加速链接输入框"
                 autoFocus
               />
             </div>
@@ -493,9 +500,9 @@ export default function HomePage() {
               { icon: FileText, title: 'Raw 文件', desc: 'raw.githubusercontent 直链文件', color: 'text-sky-300 bg-sky-500/10 border-sky-500/20' },
               { icon: Braces, title: 'Gist 片段', desc: 'gist 上的代码片段文件', color: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20' },
               { icon: GitBranch, title: 'Git Clone', desc: '智能 HTTP 协议透传克隆', color: 'text-teal-300 bg-teal-500/10 border-teal-500/20' },
-              { icon: Globe, title: '整页代理浏览', desc: '网页内链接自动改写,冲浪不跳出', color: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
+              { icon: Globe, title: '整页代理浏览', desc: '页面内链接与 JS 动态资源自动钩住改写', color: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
               { icon: Zap, title: '断点续传', desc: '透明转发 Range 分段请求', color: 'text-orange-300 bg-orange-500/10 border-orange-500/20' },
-              { icon: ShieldCheck, title: '白名单安全', desc: '仅代理 GitHub 系域名,防 SSRF', color: 'text-lime-300 bg-lime-500/10 border-lime-500/20' },
+              { icon: ShieldCheck, title: '任意域名', desc: '不限 GitHub 系域名,全网站均可代理', color: 'text-lime-300 bg-lime-500/10 border-lime-500/20' },
             ].map((t) => (
               <Card
                 key={t.title}
@@ -602,7 +609,7 @@ export default function HomePage() {
       <footer className="mt-auto border-t border-white/[0.06] pb-[env(safe-area-inset-bottom)]">
         <div className="max-w-4xl mx-auto px-4 py-6 text-center text-xs text-zinc-600 space-y-1">
           <p>
-            GHFast · 由 Next.js 流式反向代理驱动 · 仅代理 GitHub 域名白名单内容,请勿滥用
+            GHFast · 由 Next.js 流式反向代理驱动 · 支持任意域名整页代理浏览,请勿滥用
           </p>
           <p>流量为本站临时转发,商用与大额持续负载请自建镜像</p>
         </div>
