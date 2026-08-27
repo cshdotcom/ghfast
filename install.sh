@@ -59,38 +59,28 @@ OS=$(uname -s)
 [[ "$OS" == "Linux" ]] || log "⚠ 当前系统为 $OS,未在非 Linux 环境充分测试"
 
 # ----------------------------- 解析下载地址 -----------------------------
+# 资产使用无版本固定文件名,GitHub latest/download 重定向永远指向最新版,
+# 无需调用 GitHub API(规避匿名限流 403)
 resolve_asset_url() {
-  local api url_json
+  local ver tag asset="ghfast-standalone-linux-x64.tar.gz"
   if [[ "$GHFAST_VERSION" == "latest" ]]; then
-    api="https://api.github.com/repos/${GHFAST_REPO}/releases/latest"
+    tag="latest/download"
   else
-    api="https://api.github.com/repos/${GHFAST_REPO}/releases/tags/${GHFAST_VERSION#v}"
+    tag="download/v${GHFAST_VERSION#v}"
   fi
-  url_json=$(curl -fsSL "$api") || fail "无法访问 GitHub Release API(检查网络)"
-  echo "$url_json" | grep -o '"browser_download_url": *"[^"]*"' \
-    | grep 'standalone-linux-x64.tar.gz' | head -1 \
-    | sed 's/.*"\(https[^"]*\)"/\1/'
+  echo "https://github.com/${GHFAST_REPO}/releases/${tag}/${asset}"
 }
 
 ASSET_URL=$(resolve_asset_url)
-if [[ -z "$ASSET_URL" ]]; then
-  if [[ "$ARCH" == "x86_64" ]]; then
-    fail "未找到 standalone 资产,请到 https://github.com/${GHFAST_REPO}/releases 检查"
-  else
-    # 非 x64 回退:源码构建(AI Agent 可按提示继续)
-    log "❌ 暂无 ${ARCH} 预编译包,回退为源码构建方案:"
-    log "  1. git clone https://github.com/${GHFAST_REPO}.git ${INSTALL_DIR}-src"
-    log "  2. cd ${INSTALL_DIR}-src && bun install 或 npm install"
-    log "  3. echo 'DATABASE_URL=\"file:../db/custom.db\"' > .env && mkdir -p db && bun run db:push"
-    log "  4. bun run build && bun run start"
-    echo "GHFAST_READY=0 GHFAST_FALLBACK=source-build"
-    exit 2
-  fi
-fi
-
-# ----------------------------- 下载与解压 -----------------------------
-if [[ "$ASSET_URL" != "https://"* ]]; then
-  fail "下载地址无效: $ASSET_URL"
+if [[ "$ARCH" != "x86_64" ]]; then
+  # 非 x64 回退:源码构建(AI Agent 可按提示继续)
+  log "❌ 暂无 ${ARCH} 预编译包,回退为源码构建方案:"
+  log "  1. git clone https://github.com/${GHFAST_REPO}.git ${INSTALL_DIR}-src"
+  log "  2. cd ${INSTALL_DIR}-src && bun install 或 npm install"
+  log "  3. echo 'DATABASE_URL=\"file:../db/custom.db\"' > .env && mkdir -p db && bun run db:push"
+  log "  4. bun run build && bun run start"
+  echo "GHFAST_READY=0 GHFAST_FALLBACK=source-build"
+  exit 2
 fi
 
 log "版本: ${GHFAST_VERSION}"
