@@ -10,8 +10,9 @@ if [ -f .env ]; then
 fi
 
 # 2) 再应用环境变量覆盖(.env 之后,保证 PORT=xxx bash start.sh 可覆盖)
+# 注意:绑定地址只用 GHFAST_HOST 控制,不读 bash 内置 HOSTNAME(那是容器主机名)
 export PORT="${PORT:-${GHFAST_PORT:-3000}}"
-export HOSTNAME="${HOSTNAME:-${GHFAST_HOST:-0.0.0.0}}"
+export HOSTNAME="${GHFAST_HOST:-0.0.0.0}"
 export DATABASE_URL="${DATABASE_URL:-file:$(pwd)/db/custom.db}"
 export NODE_ENV=production
 
