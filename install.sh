@@ -86,7 +86,7 @@ fi
 log "版本: ${GHFAST_VERSION}"
 log "下载: ${ASSET_URL}"
 TMP_TGZ=$(mktemp /tmp/ghfast-XXXX.tar.gz)
-curl -fL --progress-bar -o "$TMP_TGZ" "$ASSET_URL" || fail "下载失败"
+curl -fsSL -o "$TMP_TGZ" "$ASSET_URL" || fail "下载失败(检查网络或稍后重试): $ASSET_URL"
 
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$TMP_TGZ" -C "$INSTALL_DIR" --strip-components=1 || fail "解压失败"
@@ -119,7 +119,7 @@ fi
 
 # ----------------------------- 启动与健康检查 -----------------------------
 log "启动 GHFast(端口 ${PORT})..."
-nohup bash start.sh > ghfast.log 2>&1 &
+PORT="$PORT" nohup bash start.sh > ghfast.log 2>&1 &
 echo $! > ghfast.pid
 log "进程 PID: $(cat ghfast.pid)"
 
