@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { resolveRequestOrigin } from '@/lib/request-origin';
 import {
   resolveRegistry,
   buildChallenge,
@@ -89,11 +90,7 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
   const pathSegs = (rest ?? []).map((s) => decodeURIComponent(s));
   // realm 要回写给 daemon,host 必须以请求头为准:
   // standalone 下 nextUrl.origin 会被 Next 用 HOSTNAME env(默认 0.0.0.0)重写,daemon 无法解析
-  const xfHost = req.headers.get('x-forwarded-host');
-  const xfProto = req.headers.get('x-forwarded-proto');
-  const host = xfHost?.split(',')[0]?.trim() || req.headers.get('host') || req.nextUrl.host;
-  const proto = xfProto?.split(',')[0]?.trim() || req.nextUrl.protocol.replace(/:$/, '') || 'http';
-  const requestOrigin = `${proto}://${host}`;
+  const { origin: requestOrigin } = resolveRequestOrigin(req);
   const auth = req.headers.get('authorization');
 
   /* ---------- ping:GET /v2 ---------- */

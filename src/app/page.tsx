@@ -28,6 +28,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { buildPullCommand } from '@/lib/docker-registry';
 
 /* ---------------------------------- 类型 ---------------------------------- */
 
@@ -37,6 +38,15 @@ interface DockerInfo {
   digest: string | null;
   registryHost: string;
   pullCommand: string;
+}
+
+/** /api/docker/check 响应:exists=null 表示上游不可达等临时故障 */
+interface DockerCheckResult {
+  exists: boolean | null;
+  error?: string;
+  digest?: string | null;
+  variants?: number;
+  platforms?: string[];
 }
 
 interface AnalyzeResult {
@@ -172,9 +182,80 @@ export default function HomePage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [downloaded, setDownloaded] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [checkRes, setCheckRes] = useState<DockerCheckResult | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCheckedRef = useRef('');
 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const siteHost = typeof window !== 'undefined' ? window.location.host : '';
+
+  /**
+   * 拼接 docker 部署地址以浏览地址为准,客户端重拼:
+   * API 返回的 pullCommand 基于 nextUrl.host,在网关/standalone 下可能是内网地址。
+   */
+  const dockerPullCmd = useMemo(() => {
+    const d = result?.docker;
+    if (result?.type !== 'docker' || !d) return '';
+    const ref = {
+      reference: '',
+      registryHost: d.registryHost,
+      name: d.image,
+      tag: d.tag,
+      digest: d.digest ?? undefined,
+      pullCommandHost: d.registryHost === 'registry-1.docker.io' ? 'docker.io' : d.registryHost,
+      explicitRegistry: true,
+      confidence: 'high' as const,
+    };
+    return siteHost ? buildPullCommand(siteHost, ref) : d.pullCommand;
+  }, [result, siteHost]);
+
+  /** 检测成功后生成 @digest 不可变 pull 命令 */
+  const dockerDigestCmd = useMemo(() => {
+    const d = result?.docker;
+    if (result?.type !== 'docker' || !d || !checkRes?.exists || !checkRes.digest) return '';
+    return buildPullCommand(siteHost, {
+      reference: '',
+      registryHost: d.registryHost,
+      name: d.image,
+      tag: d.tag,
+      digest: checkRes.digest,
+      pullCommandHost: d.registryHost === 'registry-1.docker.io' ? 'docker.io' : d.registryHost,
+      explicitRegistry: true,
+      confidence: 'high',
+    });
+  }, [result, siteHost, checkRes]);
+
+  /** 向上游 registry 实时校验镜像(digest/平台清单) */
+  const checkImage = useCallback(async () => {
+    const d = result?.docker;
+    if (result?.type !== 'docker' || !d) return;
+    const prefix = d.registryHost === 'registry-1.docker.io' ? '' : `${d.registryHost}/`;
+    const ref = `${prefix}${d.image}${d.digest ? `@${d.digest}` : `:${d.tag}`}`;
+    setChecking(true);
+    try {
+      const res = await fetch('/api/docker/check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ image: ref }),
+      });
+      setCheckRes(await res.json());
+    } catch {
+      setCheckRes({ exists: null, error: '检测服务暂不可用' });
+    } finally {
+      setChecking(false);
+    }
+  }, [result]);
+
+  // 识别出 Docker 镜像后自动检测一次(换输入自动重检,同引用不重复)
+  useEffect(() => {
+    const d = result?.docker;
+    if (result?.type !== 'docker' || !d) return;
+    const ref = `${d.registryHost === 'registry-1.docker.io' ? '' : `${d.registryHost}/`}${d.image}${d.digest ? `@${d.digest}` : `:${d.tag}`}`;
+    if (lastCheckedRef.current === ref) return;
+    lastCheckedRef.current = ref;
+    void checkImage();
+  }, [result, checkImage]);
 
   const proxyFullUrl = useMemo(() => {
     if (!result?.valid) return '';
@@ -211,6 +292,7 @@ export default function HomePage() {
       });
       const data: AnalyzeResult = await res.json();
       setResult(data);
+      setCheckRes(null);
       if (!data.valid && data.error) toast.warning(data.error);
     } catch {
       setResult({ valid: false, error: '分析服务暂时不可用' });
@@ -237,8 +319,8 @@ export default function HomePage() {
   const handleDownload = () => {
     if (!proxyFullUrl || !result?.valid) return;
     if (result.type === 'docker') {
-      // Docker 镜像不走浏览器下载,复制 docker pull 命令
-      void copyText(result.docker?.pullCommand ?? proxyFullUrl, 'docker pull 命令已复制');
+      // Docker 镜像不走浏览器下载,复制 docker pull 命令(客户端重拼,地址与浏览地址一致)
+      void copyText(dockerPullCmd || result.docker?.pullCommand || proxyFullUrl, 'docker pull 部署命令已复制');
       setDownloaded(true);
       setTimeout(() => refreshData(), 1500);
       return;
@@ -265,9 +347,38 @@ export default function HomePage() {
     if (!proxyFullUrl) return [];
     if (result?.type === 'docker' && result.docker) {
       const d = result.docker;
+      // 部署命令以客户端重拼为准(与浏览地址同源);不含 "docker pull " 前缀的镜像引用供 run/compose/k8s 复用
+      const accelRef = dockerPullCmd.replace(/^docker pull /, '');
+      const shortName = d.image.split('/').pop()?.replace(/[^a-z0-9_.-]/gi, '-') || 'app';
       return [
-        { id: 'pull', label: 'docker pull', code: d.pullCommand },
-        { id: 'mirror', label: 'daemon.json(全局 mirror)', code: JSON.stringify({ 'registry-mirrors': [origin || 'https://<本站域名>'] }, null, 2) },
+        { id: 'pull', label: 'docker pull', code: dockerPullCmd },
+        ...(dockerDigestCmd
+          ? [{ id: 'pull-digest', label: 'pull @digest(不可变)', code: dockerDigestCmd }]
+          : []),
+        {
+          id: 'run',
+          label: 'docker run',
+          code: `docker run -d --name ${shortName} --restart unless-stopped ${accelRef}`,
+        },
+        {
+          id: 'compose',
+          label: 'docker-compose',
+          code: `services:\n  ${shortName}:\n    image: ${accelRef}\n    restart: unless-stopped`,
+        },
+        {
+          id: 'k8s',
+          label: 'Kubernetes',
+          code: `containers:\n  - name: ${shortName}\n    image: ${accelRef}\n    imagePullPolicy: IfNotPresent`,
+        },
+        {
+          id: 'mirror',
+          label: 'daemon.json(全局 mirror)',
+          code: JSON.stringify(
+            { 'registry-mirrors': [origin || 'https://<本站域名>'] },
+            null,
+            2
+          ),
+        },
         {
           id: 'all',
           label: '全 registry 示例',
@@ -293,7 +404,7 @@ export default function HomePage() {
         ? [{ id: 'git', label: 'git clone', code: `git clone "${proxyFullUrl}"` }]
         : []),
     ];
-  }, [proxyFullUrl, fileNameForCmd, result, origin]);
+  }, [proxyFullUrl, fileNameForCmd, result, origin, dockerPullCmd, dockerDigestCmd]);
 
   return (
     <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100 relative overflow-x-hidden">
@@ -482,7 +593,8 @@ export default function HomePage() {
                 <div className="mt-4 rounded-lg border border-white/[0.08] bg-zinc-950/80 p-3">
                   <div className="flex items-center justify-between gap-2 mb-1.5">
                     <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-medium flex items-center gap-1">
-                      <ShieldCheck className="w-3 h-3 text-emerald-400" /> 加速直链(可直接分享)
+                      <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                      {result.type === 'docker' ? '镜像部署地址(本站 registry)' : '加速直链(可直接分享)'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -499,24 +611,92 @@ export default function HomePage() {
                       >
                         <Copy className="w-3.5 h-3.5" />
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 w-7 p-0 text-zinc-400 hover:text-emerald-300 hover:bg-white/5"
-                        onClick={() => window.open(proxyFullUrl, '_blank')}
-                        aria-label="新窗口打开加速链接"
-                      >
-                        <Link2 className="w-3.5 h-3.5" />
-                      </Button>
+                      {result.type !== 'docker' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-zinc-400 hover:text-emerald-300 hover:bg-white/5"
+                          onClick={() => window.open(proxyFullUrl, '_blank')}
+                          aria-label="新窗口打开加速链接"
+                        >
+                          <Link2 className="w-3.5 h-3.5" />
+                        </Button>
+                      )}
                     </div>
                   </div>
+                  {result.type === 'docker' && (
+                    <p className="mt-1.5 text-[11px] text-zinc-600">
+                      部署命令见下方「docker pull」页签;daemon 只需把本站当作 registry,无需直连上游。
+                    </p>
+                  )}
                 </div>
+
+                {/* Docker 镜像实时检测(识别后自动执行) */}
+                {result.type === 'docker' && result.docker && (
+                  <div className="mt-3 rounded-lg border border-white/[0.08] bg-zinc-950/60 p-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-medium flex items-center gap-1">
+                        <Container className="w-3 h-3 text-cyan-400" /> 镜像检测 · 上游 registry 实时校验
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] text-zinc-400 hover:text-emerald-300 hover:bg-white/5"
+                        onClick={() => void checkImage()}
+                        disabled={checking}
+                      >
+                        {checking ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="w-3 h-3" />
+                        )}
+                        重新检测
+                      </Button>
+                    </div>
+                    <div className="mt-1.5 text-xs">
+                      {checking && !checkRes && (
+                        <span className="text-zinc-500 flex items-center gap-1.5">
+                          <Loader2 className="w-3 h-3 animate-spin" /> 正在探测上游 manifest…
+                        </span>
+                      )}
+                      {checkRes?.exists === true && (
+                        <div className="text-emerald-300/90 space-y-1">
+                          <p>
+                            ✓ 镜像可公开拉取
+                            {typeof checkRes.variants === 'number' && checkRes.variants > 0
+                              ? ` · ${checkRes.variants} 个平台清单`
+                              : ''}
+                            {checkRes.platforms && checkRes.platforms.length > 0
+                              ? `(${checkRes.platforms.slice(0, 4).join(' / ')}${
+                                  checkRes.platforms.length > 4 ? ' …' : ''
+                                })`
+                              : ''}
+                          </p>
+                          {checkRes.digest && (
+                            <p
+                              className="font-mono text-[11px] text-zinc-500 break-all select-all"
+                              title="检测到的内容摘要,可用于不可变部署"
+                            >
+                              digest: {checkRes.digest}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {checkRes?.exists === false && (
+                        <p className="text-red-300 break-all">✗ {checkRes.error ?? '镜像不可拉取'}</p>
+                      )}
+                      {checkRes?.exists === null && (
+                        <p className="text-amber-300 break-all">⚠ {checkRes.error ?? '检测失败'}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* 命令行片段 */}
                 {snippets.length > 0 && (
                   <Tabs defaultValue={snippets[0]?.id} className="mt-4">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <TabsList className="bg-zinc-950/80 border border-white/[0.08] h-8 p-0.5">
+                      <TabsList className="bg-zinc-950/80 border border-white/[0.08] min-h-8 h-auto p-0.5 flex-wrap">
                         {snippets.map((s) => (
                           <TabsTrigger
                             key={s.id}

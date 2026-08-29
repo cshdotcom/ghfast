@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseGithubUrl, TYPE_LABELS } from '@/lib/github-proxy';
+import { resolveRequestOrigin } from '@/lib/request-origin';
 import {
   parseDockerReference,
   buildPullCommand,
@@ -43,7 +44,9 @@ export async function POST(req: NextRequest) {
   }
 
   const value = (body.url ?? '').trim();
-  const host = req.nextUrl.host;
+  // 拼接 docker 部署地址必须以对外 host 为准:
+  // nextUrl.host 在网关/standalone 下可能是 localhost:3000 / 0.0.0.0,拼出来的 pull 命令用户无法使用
+  const { host } = resolveRequestOrigin(req);
   const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
 
   /* -------- 识别顺序 --------
