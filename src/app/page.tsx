@@ -122,6 +122,11 @@ const EXAMPLES = [
     icon: Container,
     url: 'alpine:latest',
   },
+  {
+    label: 'GHCR 镜像',
+    icon: Container,
+    url: 'ghcr.io/astral-sh/uv:latest',
+  },
 ];
 
 /* --------------------------------- 工具函数 -------------------------------- */
@@ -335,14 +340,14 @@ export default function HomePage() {
         {/* Hero */}
         <section className="text-center pt-12 pb-8">
           <h2 className="text-3xl sm:text-4xl font-bold tracking-tight">
-            GitHub 文件
+            GitHub 文件 · Docker 镜像
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">
-              {' '}极速加速下载
+              {' '}极速加速
             </span>
           </h2>
           <p className="mt-3 text-sm sm:text-base text-zinc-400 max-w-xl mx-auto">
-            粘贴 GitHub 链接或任意网址,本站充当临时代理服务器为你流式加速转发:
-            Releases、仓库压缩包、Raw 文件、Gist 与 git clone 全支持。
+            粘贴 GitHub 链接、Docker 镜像名或任意网址,自动识别并加速:
+            Releases、压缩包、Raw、Gist、git clone 与全仓库 Docker 拉取。
             还能整页代理浏览任意网站 —— 页内链接与 JS 动态资源自动钩住改写,冲浪不跳出。
           </p>
         </section>
@@ -355,9 +360,9 @@ export default function HomePage() {
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="粘贴 GitHub 链接或任意网址,如 https://github.com/user/repo/releases/download/..."
+                placeholder="粘贴 GitHub 链接 / Docker 镜像名 / 任意网址,自动识别,如 nginx:latest · ghcr.io/owner/repo · https://github.com/..."
                 className="pl-9 h-11 font-mono text-xs sm:text-sm bg-zinc-950/70 border-white/10 focus-visible:ring-emerald-500/50 placeholder:text-zinc-600 placeholder:font-sans"
-                aria-label="加速链接输入框"
+                aria-label="加速链接输入框(自动识别 GitHub 链接、Docker 镜像与任意网址)"
                 autoFocus
               />
             </div>
@@ -559,6 +564,7 @@ export default function HomePage() {
               { icon: Braces, title: 'Gist 片段', desc: 'gist 上的代码片段文件', color: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20' },
               { icon: GitBranch, title: 'Git Clone', desc: '智能 HTTP 协议透传克隆', color: 'text-teal-300 bg-teal-500/10 border-teal-500/20' },
               { icon: Globe, title: '整页代理浏览', desc: '页面内链接与 JS 动态资源自动钩住改写', color: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
+              { icon: Container, title: 'Docker 镜像加速', desc: 'Registry v2 全仓库:Hub / ghcr / quay / gcr / k8s…', color: 'text-cyan-300 bg-cyan-500/10 border-cyan-500/20' },
               { icon: Zap, title: '断点续传', desc: '透明转发 Range 分段请求', color: 'text-orange-300 bg-orange-500/10 border-orange-500/20' },
               { icon: ShieldCheck, title: '任意域名', desc: '不限 GitHub 系域名,全网站均可代理', color: 'text-lime-300 bg-lime-500/10 border-lime-500/20' },
             ].map((t) => (

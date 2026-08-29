@@ -98,7 +98,7 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
         method: 'GET',
         headers: { authorization: auth, 'user-agent': 'docker/25-GHFast' },
         cache: 'no-store',
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(6_000),
       });
       return new NextResponse(up.body, { status: up.status, headers: pickResponseHeaders(up.headers) });
     }
@@ -109,7 +109,7 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
       const up = await fetch('https://registry-1.docker.io/v2/', {
         headers: pickRequestHeaders(req, true),
         cache: 'no-store',
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(6_000),
       });
       const ch = parseWwwAuth(up.headers.get('www-authenticate'));
       if (ch.realm) realm = ch.realm;
@@ -210,13 +210,28 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
     return NextResponse.json(registryErrorJson('UNAVAILABLE', '上游 registry 不可达'), { status: 502 });
   }
 
-  // blob/manifest 成功才落库;401/404 等错误不记录
-  if (upstream.ok && (opPath.startsWith('blobs/') || opPath.startsWith('manifests/'))) {
+  // blob/manifest 成功才落库(仅 GET,HEAD 探测不入库);401/404 等错误不记录
+  if (
+    req.method === 'GET' &&
+    upstream.ok &&
+    (opPath.startsWith('blobs/') || opPath.startsWith('manifests/'))
+  ) {
     const refPath = opPath; // manifests/<tag> 或 blobs/<digest>
     await recordPull(target.host, target.name, refPath, upstream.headers.get('content-length'));
   }
 
   const respHeaders = pickResponseHeaders(upstream.headers);
+  // 401 challenge 改写:realm 指向本站 /v2/auth,token 获取也走加速通道
+  // (否则 daemon 需直连上游 auth 域,在国内网络下常不可达)
+  if (upstream.status === 401) {
+    const ch = parseWwwAuth(upstream.headers.get('www-authenticate'));
+    if (ch.realm) {
+      respHeaders.set(
+        'www-authenticate',
+        buildChallenge(requestOrigin, ch.realm, ch.service ?? defaultChallenge(target.host).service)
+      );
+    }
+  }
   // blob 支持断点续传
   return new NextResponse(req.method === 'HEAD' ? null : upstream.body, {
     status: upstream.status,

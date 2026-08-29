@@ -99,20 +99,31 @@ function isHubAuthHost(realmHost: string, service: string): boolean {
 }
 
 /**
- * 归一化 token scope:Docker Hub 官方镜像(library/ 补全)。
- * daemon 对 <本站>/alpine 发起 pull 时 scope=repository:alpine:pull,
- * 但上游 registry 需要的 scope 是 repository:library/alpine:pull。
+ * 归一化 token scope:
+ *  1. 剥离 daemon 加上的 registry 域前缀:daemon 对 <本站>/ghcr.io/owner/repo 发起 pull 时,
+ *     scope=repository:ghcr.io/owner/repo:pull,而真实上游需要 repository:owner/repo:pull;
+ *  2. Docker Hub 官方镜像补 library/:repository:alpine:pull → repository:library/alpine:pull。
  */
 export function normalizeScope(scope: string | null, realmHost: string, service: string): string | null {
-  if (!scope || !isHubAuthHost(realmHost, service)) return scope;
+  if (!scope) return scope;
   return scope
     .split(/\s+/)
     .map((item) => {
       const m = /^repository:([^:]+):(pull|push|\*,\*|\*|pull,push)$/i.exec(item);
       if (!m) return item;
-      const repo = m[1];
-      if (repo.includes('/')) return item;
-      return `repository:library/${repo}:${m[2]}`;
+      let repo = m[1];
+      // 1) 剥离显式 registry 域前缀(首段含点/端口/localhost 视为域)
+      if (repo.includes('/')) {
+        const first = repo.split('/')[0];
+        if (first.includes('.') || first.includes(':') || first.toLowerCase() === 'localhost') {
+          repo = repo.slice(first.length + 1);
+        }
+      }
+      // 2) Hub library/ 补全
+      if (isHubAuthHost(realmHost, service) && !repo.includes('/')) {
+        repo = `library/${repo}`;
+      }
+      return `repository:${repo}:${m[2]}`;
     })
     .join(' ');
 }
@@ -179,54 +190,175 @@ export interface ParsedDockerRef {
   digest?: string;
   /** docker pull 应使用的名字(本站域名 + reference) */
   pullCommandHost: string;
+  /** 用户是否显式书写了 registry 域前缀 */
+  explicitRegistry: boolean;
+  /** 识别置信度:high=无歧义;medium=未知域前缀且无显式 tag(可能与网址歧义) */
+  confidence: 'high' | 'medium';
+}
+
+/** Docker 镜像 repo 组件约束(官方规则) */
+const REPO_COMPONENT_RE = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/;
+const TAG_RE = /^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$/;
+const DIGEST_RE = /^(sha256:[0-9a-f]{64}|sha512:[0-9a-f]{128})$/;
+
+/** 代码托管/网站域名家族 —— 永不判为 Docker 镜像(交给网址代理路径) */
+function isWebHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return (
+    /(^|\.)github\.com$/.test(h) ||
+    /(^|\.)githubusercontent\.com$/.test(h) ||
+    /(^|\.)githubassets\.com$/.test(h) ||
+    /(^|\.)github\.io$/.test(h) ||
+    /(^|\.)gitlab\.com$/.test(h) ||
+    /(^|\.)gitee\.com$/.test(h) ||
+    /(^|\.)bitbucket\.org$/.test(h)
+  );
+}
+
+/** 主流 registry 域(判定输入是镜像而非普通网址的强特征) */
+const KNOWN_REGISTRIES = new Set([
+  'ghcr.io',
+  'gcr.io',
+  'quay.io',
+  'registry.k8s.io',
+  'k8s.gcr.io',
+  'mcr.microsoft.com',
+  'public.ecr.aws',
+  'registry.gitlab.com',
+  'docker.io',
+  'registry-1.docker.io',
+  'index.docker.io',
+  'nvcr.io',
+  'registry.digitalocean.com',
+  'docker.cloudsmith.io',
+  'mirror.gcr.io',
+  'ccr.ccs.tencentyun.com',
+]);
+
+/** 是否主流/知名 registry 域(含模式匹配) */
+export function isKnownRegistryHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (KNOWN_REGISTRIES.has(h)) return true;
+  if (/\.gcr\.io$/.test(h) || /\.docker\.io$/.test(h)) return true;
+  if (/^registry\.cn-[a-z0-9-]+\.aliyuncs\.com$/.test(h)) return true;
+  return false;
+}
+
+function validRepoName(name: string): boolean {
+  if (!name) return false;
+  return name
+    .split('/')
+    .every((c) => c.length > 0 && REPO_COMPONENT_RE.test(c.toLowerCase()));
 }
 
 /**
- * 识别用户输入是否为 Docker 镜像引用(仅处理显式特征,避免与 GitHub owner/repo 简写冲突):
- *  - 显式 registry 前缀:ghcr.io/owner/repo[:tag][@digest]
- *  - docker.io 前缀:docker.io/library/alpine[:tag]
- *  - 单段名(+可选 tag):alpine / alpine:latest / library/nginx:1.25
+ * 识别用户输入是否为 Docker 镜像引用。严格模式:
+ *  - 带协议(://)或含空格 → 一律不算镜像(交给网址代理)
+ *  - GitHub/GitLab 等代码托管域名家族 → 不算镜像
+ *  - 显式 registry 前缀:ghcr.io/o/r[:tag][@digest]、docker.io/library/alpine、localhost:5000/img
+ *  - Hub 官方镜像:alpine / alpine:latest / library/nginx:1.25(可带 digest)
+ *  - Hub 用户镜像:必须显式带 tag 或 digest(user/img:1.0),裸 user/repo 让位给 GitHub 简写
+ *  - 未知域前缀且无显式 tag → confidence:'medium'(调用方决定是否让位给网址解析)
  */
 export function parseDockerReference(raw: string): ParsedDockerRef | null {
-  const input = raw.trim().replace(/^docker\s+pull\s+/i, '').replace(/^https?:\/\//, '');
+  let input = raw.trim();
   if (!input) return null;
+  // "docker pull" / "docker image pull" 前缀剥离
+  input = input.replace(/^docker\s+(?:image\s+)?pull\s+/i, '').trim();
+  if (!input || /\s/.test(input)) return null;
+  // 带协议的 URL 不是镜像
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) return null;
 
-  // 显式 registry 前缀(docker.io / ghcr.io / 任意域)
-  const explicit = /^((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::[0-9]+)?)\/(.+)$/i.exec(input);
-  if (explicit) {
-    const host = explicit[1].toLowerCase();
-    const rest = explicit[2];
-    const isHub = host === 'docker.io';
-    const m = /^(.+?)(?::([a-z0-9._-]+))?(?:@(sha256:[0-9a-f]{64}))?$/i.exec(rest);
-    if (!m) return null;
-    const name = isHub ? normalizeHubName(m[1]) : m[1];
-    const tag = m[2] ?? 'latest';
-    const registryHost = isHub ? 'registry-1.docker.io' : host;
+  /* 1) digest */
+  let digest: string | undefined;
+  const at = input.lastIndexOf('@');
+  if (at !== -1) {
+    const d = input.slice(at + 1).toLowerCase();
+    if (!DIGEST_RE.test(d)) return null;
+    digest = d;
+    input = input.slice(0, at);
+    if (!input) return null;
+  }
+
+  /* 2) tag:最后一个 "/" 之后的第一个 ":" 才是 tag 分隔(域名端口不受影响) */
+  let tag = 'latest';
+  let explicitTag = false;
+  const lastSlash = input.lastIndexOf('/');
+  const colon = input.indexOf(':', lastSlash + 1);
+  if (colon !== -1) {
+    const t = input.slice(colon + 1);
+    if (!TAG_RE.test(t)) return null;
+    tag = t;
+    explicitTag = true;
+    input = input.slice(0, colon);
+    if (!input) return null;
+  }
+
+  /* 3) 分段 */
+  const segs = input.split('/').filter(Boolean);
+  if (!segs.length || segs.length > 6) return null;
+
+  const first = segs[0];
+  const hostLike =
+    first.includes('.') || first.includes(':') || first.toLowerCase() === 'localhost';
+
+  /* 4) 显式 registry 前缀 */
+  if (hostLike) {
+    const hostOk =
+      /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]+)?$/i.test(first) ||
+      /^localhost(:[0-9]+)?$/i.test(first);
+    if (!hostOk) return null;
+    if (isWebHost(first)) return null; // 代码托管域名 → 交给网址路径
+    if (segs.length < 2) return null; // 只有域名没有 repo → 更像网址
+    const isHub = /^(docker\.io|registry-1\.docker\.io|index\.docker\.io)$/i.test(first);
+    const name = segs.slice(1).join('/').toLowerCase();
+    if (!validRepoName(name)) return null;
+    const hubName = normalizeHubName(name);
+    const host = first.toLowerCase();
+    const known = isKnownRegistryHost(host);
     return {
-      reference: `${host}/${name}${m[3] ? `@${m[3]}` : `:${tag}`}`,
-      registryHost,
-      name,
+      reference: `${isHub ? 'docker.io' : host}/${isHub ? hubName : name}${digest ? `@${digest}` : `:${tag}`}`,
+      registryHost: isHub ? 'registry-1.docker.io' : host,
+      name: isHub ? hubName : name,
       tag,
-      digest: m[3],
-      pullCommandHost: host,
+      digest,
+      pullCommandHost: isHub ? 'docker.io' : host,
+      explicitRegistry: true,
+      confidence: known || explicitTag || digest || first.includes(':') ? 'high' : 'medium',
     };
   }
 
-  // 单段名(官方镜像)+ 可选 tag:alpine / alpine:latest / library/nginx:1.25
-  const single = /^(library\/)?([a-z0-9_-]+)(?::([a-z0-9._-]+))?(?:@(sha256:[0-9a-f]{64}))?$/i.exec(input);
-  if (single && input.includes(':')) {
-    const ns = single[1] ?? 'library/';
-    const tag = single[3] ?? 'latest';
+  /* 5) Docker Hub(无显式 registry) */
+  const name = segs.join('/').toLowerCase();
+  if (!validRepoName(name)) return null;
+
+  // 多段用户镜像:需显式 tag/digest,或 library/ 官方前缀,否则让位给 GitHub owner/repo 简写
+  if (segs.length >= 2) {
+    const isOfficial = segs[0].toLowerCase() === 'library';
+    if (!explicitTag && !digest && !isOfficial) return null;
     return {
-      reference: `docker.io/${ns}${single[2]}${single[4] ? `@${single[4]}` : `:${tag}`}`,
+      reference: `docker.io/${normalizeHubName(name)}${digest ? `@${digest}` : `:${tag}`}`,
       registryHost: 'registry-1.docker.io',
-      name: `${ns}${single[2]}`,
+      name: normalizeHubName(name),
       tag,
-      digest: single[4],
+      digest,
       pullCommandHost: 'docker.io',
+      explicitRegistry: false,
+      confidence: 'high',
     };
   }
-  return null;
+
+  // 单段官方镜像(alpine / alpine:latest / @digest)
+  return {
+    reference: `docker.io/library/${name}${digest ? `@${digest}` : `:${tag}`}`,
+    registryHost: 'registry-1.docker.io',
+    name: `library/${name}`,
+    tag,
+    digest,
+    pullCommandHost: 'docker.io',
+    explicitRegistry: false,
+    confidence: 'high',
+  };
 }
 
 /** 生成 docker pull 命令(本站域名前缀;Docker Hub 显式补 library/) */

@@ -23,6 +23,7 @@
 4. 部署完成后请验证:
    curl -s http://localhost:3000/api/stats   应返回 JSON 统计数据
    curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/   应返回 200
+   curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/v2/   应返回 401(Docker registry 握手正常)
 
 5. 最后告诉我:
    - 访问地址(本机 http://localhost:3000,或拼接可对外访问的 URL)
@@ -30,6 +31,10 @@
    - 停止命令:bash ./ghfast/stop.sh
    - 使用方法:把 GitHub 链接前缀替换为 http://localhost:3000/gh/ 即可加速,
      例如 http://localhost:3000/gh/https/github.com/owner/repo/releases/download/v1.0/file.zip
+   - Docker 镜像加速:docker pull http://localhost:3000/nginx:latest 形式
+     (把镜像名前缀换成本站地址,支持 Hub/ghcr.io/quay.io/gcr.io/registry.k8s.io 等全部仓库),
+     例:docker pull localhost:3000/ghcr.io/astral-sh/uv:latest
+     或 daemon.json 配置 {"registry-mirrors": ["http://localhost:3000"]}(仅对 Docker Hub 生效)
 ```
 
 ---

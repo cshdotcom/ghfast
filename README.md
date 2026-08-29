@@ -1,6 +1,6 @@
 # ⚡ GHFast — GitHub 加速下载服务器
 
-> 一个自托管的 GitHub 加速下载(反向代理)服务器。粘贴任意 GitHub 链接,即时获得加速直链,支持 Releases、仓库压缩包、Raw 文件、Gist 与 `git clone` 全场景。
+> 一个自托管的 GitHub 加速下载(反向代理)服务器。粘贴任意 GitHub 链接或 Docker 镜像名,即时获得加速直链:支持 Releases、仓库压缩包、Raw 文件、Gist、`git clone` 与**全仓库 Docker 镜像拉取**。
 
 在线体验地址由你部署后自行填写,部署方式见下文,开箱即用。
 
@@ -14,11 +14,13 @@
   - Gist 片段:`gist.githubusercontent.com/...`
   - Codeload 快照:`codeload.github.com/...`
   - Git Clone:智能 HTTP 协议(GET/POST/HEAD)完整透传
+- **🐳 Docker 镜像加速(全仓库)** — Registry HTTP API v2 反向代理,Docker Hub / ghcr.io / quay.io / gcr.io / registry.k8s.io / mcr.microsoft.com 等全部主流仓库一个域名全拉;token 认证闭环全程走本站,`Range` 断点续传
+- **🪄 智能自动识别** — 粘贴即识别:GitHub 链接、Docker 镜像名(`nginx:latest` / `ghcr.io/o/r` / `user/img:tag`)、任意网址,自动生成对应加速结果
 - **🌐 整页代理浏览** — 直接打开代理地址即可浏览 GitHub 页面,页内链接/资源自动改写留在代理内,根相对路径由兜底路由无缝接管
 - **⏯️ 断点续传** — 透明转发 `Range` 请求头,`wget -c` / 下载工具分段拉取无感配合
 - **🔗 加速直链可分享** — 解析后生成 `/gh/https/<原始地址>` 形式的直链,可直接用于脚本、CI、下载工具
-- **🧰 命令行片段** — 一键复制 `wget` / `curl` / `git clone` 命令
-- **🛡️ 安全白名单** — 仅代理 GitHub 系域名(SSRF 防护),逐跳请求头过滤、响应头防注入
+- **🧰 命令行片段** — 一键复制 `wget` / `curl` / `git clone` / `docker pull` 命令
+- **🛡️ 任意域名代理** — 不限 GitHub 系域名,任意 http/https 站点均可代理(逐跳请求头过滤、响应头防注入)
 - **📊 数据看板** — 请求量、传输总量、覆盖仓库数统计,最近下载记录一览
 - **🌙 深色主题** — Emerald 配色,桌面 / 移动端全响应式
 
@@ -39,6 +41,28 @@
 原始:  https://github.com/o/r/releases/download/v1/a.zip
 加速:  <你的域名>/gh/https/github.com/o/r/releases/download/v1/a.zip
 ```
+
+### Docker 镜像代理路径
+
+`/v2/` 路径实现 Registry HTTP API v2,按镜像名首段自动分派真实仓库:
+
+```text
+docker pull <你的域名>/nginx:latest                 → Docker Hub(自动补 library/)
+docker pull <你的域名>/ghcr.io/owner/repo:tag       → GHCR
+docker pull <你的域名>/quay.io/ns/repo:tag          → Quay
+docker pull <你的域名>/gcr.io/project/img:tag       → GCR
+docker pull <你的域名>/registry.k8s.io/pause:3.9    → Kubernetes
+docker pull <你的域名>/registry.example.com/a/b:tag → 任意其他 registry(泛域名分派)
+```
+
+也可在 `daemon.json` 配置为 Docker Hub 全局 mirror(仅对 Hub 镜像生效):
+
+```json
+{ "registry-mirrors": ["https://<你的域名>"] }
+```
+
+> 认证说明:401 challenge 的 token realm 会被改写为本站 `/v2/auth`,token 获取全程经过本站转发,
+> daemon 无需直连 auth.docker.io / ghcr.io 等认证域;scope 自动做 `library/` 归一与 registry 前缀剥离。
 
 ## 🚀 快速开始
 
