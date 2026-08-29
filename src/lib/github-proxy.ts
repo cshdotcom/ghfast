@@ -17,7 +17,8 @@ export type GithubLinkType =
   | 'gist'
   | 'codeload'
   | 'clone'
-  | 'other';
+  | 'other'
+  | 'docker';
 
 export interface ParsedGithubUrl {
   /** 归一化后的原始地址(带协议) */
@@ -189,6 +190,7 @@ export const TYPE_LABELS: Record<GithubLinkType, string> = {
   codeload: 'Codeload 快照',
   clone: 'Git 仓库 / Clone',
   other: '通用网址 / 网页代理',
+  docker: 'Docker 镜像',
 };
 
 /** 从 fetch Response 中挑出需要回传给客户端的响应头 */

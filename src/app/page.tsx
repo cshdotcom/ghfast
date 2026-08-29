@@ -5,6 +5,7 @@ import {
   Archive,
   Braces,
   Check,
+  Container,
   Copy,
   Download,
   FileText,
@@ -30,6 +31,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 /* ---------------------------------- 类型 ---------------------------------- */
 
+interface DockerInfo {
+  image: string;
+  tag: string;
+  digest: string | null;
+  registryHost: string;
+  pullCommand: string;
+}
+
 interface AnalyzeResult {
   valid: boolean;
   error?: string;
@@ -42,6 +51,7 @@ interface AnalyzeResult {
   fileName?: string;
   sizeBytes?: number | null;
   contentType?: string;
+  docker?: DockerInfo;
 }
 
 interface HistoryRecord {
@@ -72,6 +82,7 @@ const TYPE_ICONS: Record<string, React.ElementType> = {
   codeload: Archive,
   clone: GitBranch,
   other: Globe,
+  docker: Container,
 };
 
 const TYPE_BADGE_STYLES: Record<string, string> = {
@@ -82,6 +93,7 @@ const TYPE_BADGE_STYLES: Record<string, string> = {
   codeload: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
   clone: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
   other: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
+  docker: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
 };
 
 const EXAMPLES = [
@@ -104,6 +116,11 @@ const EXAMPLES = [
     label: '网页代理 · 任意站',
     icon: Globe,
     url: 'https://github.com/login',
+  },
+  {
+    label: 'Docker 镜像',
+    icon: Container,
+    url: 'alpine:latest',
   },
 ];
 
@@ -155,7 +172,9 @@ export default function HomePage() {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const proxyFullUrl = useMemo(() => {
-    if (!result?.valid || !result.sourceUrl) return '';
+    if (!result?.valid) return '';
+    if (result.type === 'docker') return result.proxyPath ? `${origin}${result.proxyPath}` : '';
+    if (!result.sourceUrl) return '';
     return `${origin}/gh/${result.sourceUrl}`;
   }, [result, origin]);
 
@@ -212,6 +231,13 @@ export default function HomePage() {
 
   const handleDownload = () => {
     if (!proxyFullUrl || !result?.valid) return;
+    if (result.type === 'docker') {
+      // Docker 镜像不走浏览器下载,复制 docker pull 命令
+      void copyText(result.docker?.pullCommand ?? proxyFullUrl, 'docker pull 命令已复制');
+      setDownloaded(true);
+      setTimeout(() => refreshData(), 1500);
+      return;
+    }
     const a = document.createElement('a');
     a.href = proxyFullUrl;
     // 同源 + download 属性:无论上游 content-type 是否内联,都强制走下载而非页面跳转
@@ -232,6 +258,29 @@ export default function HomePage() {
 
   const snippets = useMemo(() => {
     if (!proxyFullUrl) return [];
+    if (result?.type === 'docker' && result.docker) {
+      const d = result.docker;
+      return [
+        { id: 'pull', label: 'docker pull', code: d.pullCommand },
+        { id: 'mirror', label: 'daemon.json(全局 mirror)', code: JSON.stringify({ 'registry-mirrors': [origin || 'https://<本站域名>'] }, null, 2) },
+        {
+          id: 'all',
+          label: '全 registry 示例',
+          code: [
+            `# Docker Hub(单段名自动补 library/)`,
+            `docker pull ${origin}/library/alpine:latest`,
+            `# GHCR`,
+            `docker pull ${origin}/ghcr.io/owner/repo:tag`,
+            `# Quay / GCR / Kubernetes`,
+            `docker pull ${origin}/quay.io/namespace/repo:tag`,
+            `docker pull ${origin}/gcr.io/project/image:tag`,
+            `docker pull ${origin}/registry.k8s.io/pause:3.9`,
+            `# 任意其他 registry(泛域名分派)`,
+            `docker pull ${origin}/registry.example.com/foo/bar:tag`,
+          ].join('\n'),
+        },
+      ];
+    }
     return [
       { id: 'wget', label: 'wget', code: `wget -O "${fileNameForCmd}" "${proxyFullUrl}"` },
       { id: 'curl', label: 'curl', code: `curl -L -o "${fileNameForCmd}" "${proxyFullUrl}"` },
@@ -239,7 +288,7 @@ export default function HomePage() {
         ? [{ id: 'git', label: 'git clone', code: `git clone "${proxyFullUrl}"` }]
         : []),
     ];
-  }, [proxyFullUrl, fileNameForCmd, result]);
+  }, [proxyFullUrl, fileNameForCmd, result, origin]);
 
   return (
     <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100 relative overflow-x-hidden">
@@ -391,9 +440,9 @@ export default function HomePage() {
                           </Badge>
                         )}
                         <span className="text-xs text-zinc-500">
-                          {formatBytes(result.sizeBytes)}
+                          {result.type === 'docker' ? `registry: ${result.owner ?? ''}` : formatBytes(result.sizeBytes)}
                         </span>
-                        {result.owner && result.repo && (
+                        {result.owner && result.repo && result.type !== 'docker' && (
                           <a
                             href={result.sourceUrl}
                             target="_blank"
@@ -410,8 +459,17 @@ export default function HomePage() {
                     onClick={handleDownload}
                     className="bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-semibold px-6 h-10 shadow-lg shadow-emerald-500/20"
                   >
-                    <Download className="w-4 h-4" />
-                    {downloaded ? '再次下载' : '立即下载'}
+                    {result.type === 'docker' ? (
+                      <>
+                        <Terminal className="w-4 h-4" />
+                        复制 pull 命令
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        {downloaded ? '再次下载' : '立即下载'}
+                      </>
+                    )}
                   </Button>
                 </div>
 
