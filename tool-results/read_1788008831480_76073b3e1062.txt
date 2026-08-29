@@ -1,0 +1,678 @@
+     1→'use client';
+     2→
+     3→import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+     4→import {
+     5→  Archive,
+     6→  Braces,
+     7→  Check,
+     8→  Container,
+     9→  Copy,
+    10→  Download,
+    11→  FileText,
+    12→  Github,
+    13→  GitBranch,
+    14→  Globe,
+    15→  History,
+    16→  Link2,
+    17→  Loader2,
+    18→  Package,
+    19→  ShieldCheck,
+    20→  Terminal,
+    21→  Zap,
+    22→} from 'lucide-react';
+    23→import { toast } from 'sonner';
+    24→
+    25→import { Badge } from '@/components/ui/badge';
+    26→import { Button } from '@/components/ui/button';
+    27→import { Card } from '@/components/ui/card';
+    28→import { Input } from '@/components/ui/input';
+    29→import { Skeleton } from '@/components/ui/skeleton';
+    30→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    31→
+    32→/* ---------------------------------- 类型 ---------------------------------- */
+    33→
+    34→interface DockerInfo {
+    35→  image: string;
+    36→  tag: string;
+    37→  digest: string | null;
+    38→  registryHost: string;
+    39→  pullCommand: string;
+    40→}
+    41→
+    42→interface AnalyzeResult {
+    43→  valid: boolean;
+    44→  error?: string;
+    45→  sourceUrl?: string;
+    46→  proxyPath?: string;
+    47→  type?: string;
+    48→  typeLabel?: string;
+    49→  owner?: string;
+    50→  repo?: string;
+    51→  fileName?: string;
+    52→  sizeBytes?: number | null;
+    53→  contentType?: string;
+    54→  docker?: DockerInfo;
+    55→}
+    56→
+    57→interface HistoryRecord {
+    58→  id: string;
+    59→  sourceUrl: string;
+    60→  proxyPath: string;
+    61→  type: string;
+    62→  owner: string | null;
+    63→  repo: string | null;
+    64→  fileName: string | null;
+    65→  sizeBytes: number | null;
+    66→  status: string;
+    67→  createdAt: string;
+    68→}
+    69→
+    70→interface Stats {
+    71→  totalRequests: number;
+    72→  totalBytes: number;
+    73→  todayRequests: number;
+    74→  reposServed: number;
+    75→}
+    76→
+    77→const TYPE_ICONS: Record<string, React.ElementType> = {
+    78→  release: Package,
+    79→  archive: Archive,
+    80→  raw: FileText,
+    81→  gist: Braces,
+    82→  codeload: Archive,
+    83→  clone: GitBranch,
+    84→  other: Globe,
+    85→  docker: Container,
+    86→};
+    87→
+    88→const TYPE_BADGE_STYLES: Record<string, string> = {
+    89→  release: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+    90→  archive: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+    91→  raw: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+    92→  gist: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
+    93→  codeload: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
+    94→  clone: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+    95→  other: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
+    96→  docker: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
+    97→};
+    98→
+    99→const EXAMPLES = [
+   100→  {
+   101→    label: 'Release 文件',
+   102→    icon: Package,
+   103→    url: 'https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.msi',
+   104→  },
+   105→  {
+   106→    label: '仓库压缩包',
+   107→    icon: Archive,
+   108→    url: 'https://github.com/microsoft/vscode/archive/refs/heads/main.zip',
+   109→  },
+   110→  {
+   111→    label: 'Raw 文件',
+   112→    icon: FileText,
+   113→    url: 'https://raw.githubusercontent.com/torvalds/linux/master/README',
+   114→  },
+   115→  {
+   116→    label: '网页代理 · 任意站',
+   117→    icon: Globe,
+   118→    url: 'https://github.com/login',
+   119→  },
+   120→  {
+   121→    label: 'Docker 镜像',
+   122→    icon: Container,
+   123→    url: 'alpine:latest',
+   124→  },
+   125→];
+   126→
+   127→/* --------------------------------- 工具函数 -------------------------------- */
+   128→
+   129→function formatBytes(bytes: number | null | undefined): string {
+   130→  if (bytes == null || Number.isNaN(bytes)) return '未知大小';
+   131→  if (bytes < 1024) return `${bytes} B`;
+   132→  const units = ['KB', 'MB', 'GB', 'TB'];
+   133→  let v = bytes / 1024;
+   134→  let i = 0;
+   135→  while (v >= 1024 && i < units.length - 1) {
+   136→    v /= 1024;
+   137→    i++;
+   138→  }
+   139→  return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
+   140→}
+   141→
+   142→function timeAgo(iso: string): string {
+   143→  const diff = Date.now() - new Date(iso).getTime();
+   144→  const m = Math.floor(diff / 60000);
+   145→  if (m < 1) return '刚刚';
+   146→  if (m < 60) return `${m} 分钟前`;
+   147→  const h = Math.floor(m / 60);
+   148→  if (h < 24) return `${h} 小时前`;
+   149→  return `${Math.floor(h / 24)} 天前`;
+   150→}
+   151→
+   152→async function copyText(text: string, tip = '已复制到剪贴板') {
+   153→  try {
+   154→    await navigator.clipboard.writeText(text);
+   155→    toast.success(tip);
+   156→  } catch {
+   157→    toast.error('复制失败,请手动复制');
+   158→  }
+   159→}
+   160→
+   161→/* ---------------------------------- 页面 ---------------------------------- */
+   162→
+   163→export default function HomePage() {
+   164→  const [input, setInput] = useState('');
+   165→  const [analyzing, setAnalyzing] = useState(false);
+   166→  const [result, setResult] = useState<AnalyzeResult | null>(null);
+   167→  const [stats, setStats] = useState<Stats | null>(null);
+   168→  const [history, setHistory] = useState<HistoryRecord[]>([]);
+   169→  const [downloaded, setDownloaded] = useState(false);
+   170→  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   171→
+   172→  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+   173→
+   174→  const proxyFullUrl = useMemo(() => {
+   175→    if (!result?.valid) return '';
+   176→    if (result.type === 'docker') return result.proxyPath ? `${origin}${result.proxyPath}` : '';
+   177→    if (!result.sourceUrl) return '';
+   178→    return `${origin}/gh/${result.sourceUrl}`;
+   179→  }, [result, origin]);
+   180→
+   181→  const refreshData = useCallback(async () => {
+   182→    try {
+   183→      const [s, h] = await Promise.all([
+   184→        fetch('/api/stats').then((r) => r.json()),
+   185→        fetch('/api/history?limit=20').then((r) => r.json()),
+   186→      ]);
+   187→      setStats(s);
+   188→      setHistory(h.records ?? []);
+   189→    } catch {
+   190→      /* 静默失败 */
+   191→    }
+   192→  }, []);
+   193→
+   194→  const analyze = useCallback(async (raw: string) => {
+   195→    const value = raw.trim();
+   196→    if (!value) {
+   197→      setResult(null);
+   198→      return;
+   199→    }
+   200→    setAnalyzing(true);
+   201→    try {
+   202→      const res = await fetch('/api/analyze', {
+   203→        method: 'POST',
+   204→        headers: { 'content-type': 'application/json' },
+   205→        body: JSON.stringify({ url: value }),
+   206→      });
+   207→      const data: AnalyzeResult = await res.json();
+   208→      setResult(data);
+   209→      if (!data.valid && data.error) toast.warning(data.error);
+   210→    } catch {
+   211→      setResult({ valid: false, error: '分析服务暂时不可用' });
+   212→    } finally {
+   213→      setAnalyzing(false);
+   214→    }
+   215→  }, []);
+   216→
+   217→  // 输入防抖自动解析
+   218→  useEffect(() => {
+   219→    if (debounceRef.current) clearTimeout(debounceRef.current);
+   220→    debounceRef.current = setTimeout(() => {
+   221→      analyze(input);
+   222→    }, 500);
+   223→    return () => {
+   224→      if (debounceRef.current) clearTimeout(debounceRef.current);
+   225→    };
+   226→  }, [input, analyze]);
+   227→
+   228→  useEffect(() => {
+   229→    refreshData();
+   230→  }, [refreshData]);
+   231→
+   232→  const handleDownload = () => {
+   233→    if (!proxyFullUrl || !result?.valid) return;
+   234→    if (result.type === 'docker') {
+   235→      // Docker 镜像不走浏览器下载,复制 docker pull 命令
+   236→      void copyText(result.docker?.pullCommand ?? proxyFullUrl, 'docker pull 命令已复制');
+   237→      setDownloaded(true);
+   238→      setTimeout(() => refreshData(), 1500);
+   239→      return;
+   240→    }
+   241→    const a = document.createElement('a');
+   242→    a.href = proxyFullUrl;
+   243→    // 同源 + download 属性:无论上游 content-type 是否内联,都强制走下载而非页面跳转
+   244→    a.download = '';
+   245→    a.rel = 'noopener';
+   246→    document.body.appendChild(a);
+   247→    a.click();
+   248→    a.remove();
+   249→    setDownloaded(true);
+   250→    toast.success('已开始加速下载 🚀');
+   251→    setTimeout(() => refreshData(), 1500);
+   252→  };
+   253→
+   254→  const fileNameForCmd =
+   255→    result?.fileName ||
+   256→    result?.sourceUrl?.split('/').filter(Boolean).pop() ||
+   257→    'download.bin';
+   258→
+   259→  const snippets = useMemo(() => {
+   260→    if (!proxyFullUrl) return [];
+   261→    if (result?.type === 'docker' && result.docker) {
+   262→      const d = result.docker;
+   263→      return [
+   264→        { id: 'pull', label: 'docker pull', code: d.pullCommand },
+   265→        { id: 'mirror', label: 'daemon.json(全局 mirror)', code: JSON.stringify({ 'registry-mirrors': [origin || 'https://<本站域名>'] }, null, 2) },
+   266→        {
+   267→          id: 'all',
+   268→          label: '全 registry 示例',
+   269→          code: [
+   270→            `# Docker Hub(单段名自动补 library/)`,
+   271→            `docker pull ${origin}/library/alpine:latest`,
+   272→            `# GHCR`,
+   273→            `docker pull ${origin}/ghcr.io/owner/repo:tag`,
+   274→            `# Quay / GCR / Kubernetes`,
+   275→            `docker pull ${origin}/quay.io/namespace/repo:tag`,
+   276→            `docker pull ${origin}/gcr.io/project/image:tag`,
+   277→            `docker pull ${origin}/registry.k8s.io/pause:3.9`,
+   278→            `# 任意其他 registry(泛域名分派)`,
+   279→            `docker pull ${origin}/registry.example.com/foo/bar:tag`,
+   280→          ].join('\n'),
+   281→        },
+   282→      ];
+   283→    }
+   284→    return [
+   285→      { id: 'wget', label: 'wget', code: `wget -O "${fileNameForCmd}" "${proxyFullUrl}"` },
+   286→      { id: 'curl', label: 'curl', code: `curl -L -o "${fileNameForCmd}" "${proxyFullUrl}"` },
+   287→      ...(result?.type === 'clone'
+   288→        ? [{ id: 'git', label: 'git clone', code: `git clone "${proxyFullUrl}"` }]
+   289→        : []),
+   290→    ];
+   291→  }, [proxyFullUrl, fileNameForCmd, result, origin]);
+   292→
+   293→  return (
+   294→    <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100 relative overflow-x-hidden">
+   295→      {/* 背景装饰 */}
+   296→      <div className="pointer-events-none fixed inset-0 -z-10">
+   297→        <div className="absolute top-[-20%] left-[10%] w-[500px] h-[500px] rounded-full bg-emerald-500/[0.07] blur-[120px]" />
+   298→        <div className="absolute bottom-[-10%] right-[5%] w-[400px] h-[400px] rounded-full bg-teal-500/[0.05] blur-[100px]" />
+   299→        <div
+   300→          className="absolute inset-0 opacity-[0.35]"
+   301→          style={{
+   302→            backgroundImage:
+   303→              'linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)',
+   304→            backgroundSize: '48px 48px',
+   305→          }}
+   306→        />
+   307→      </div>
+   308→
+   309→      {/* 头部 */}
+   310→      <header className="border-b border-white/[0.06]">
+   311→        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+   312→          <div className="flex items-center gap-3">
+   313→            <div className="w-9 h-9 rounded-xl bg-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+   314→              <Zap className="w-5 h-5 text-emerald-950" strokeWidth={2.5} />
+   315→            </div>
+   316→            <div>
+   317→              <h1 className="font-bold tracking-tight leading-none">GHFast</h1>
+   318→              <p className="text-xs text-zinc-500 mt-0.5">GitHub 加速下载</p>
+   319→            </div>
+   320→          </div>
+   321→          <Badge
+   322→            variant="outline"
+   323→            className="gap-1.5 border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+   324→          >
+   325→            <span className="relative flex size-2">
+   326→              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
+   327→              <span className="relative inline-flex rounded-full size-2 bg-emerald-400" />
+   328→            </span>
+   329→            在线
+   330→          </Badge>
+   331→        </div>
+   332→      </header>
+   333→
+   334→      <main className="flex-1 w-full max-w-4xl mx-auto px-4 pb-16">
+   335→        {/* Hero */}
+   336→        <section className="text-center pt-12 pb-8">
+   337→          <h2 className="text-3xl sm:text-4xl font-bold tracking-tight">
+   338→            GitHub 文件
+   339→            <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">
+   340→              {' '}极速加速下载
+   341→            </span>
+   342→          </h2>
+   343→          <p className="mt-3 text-sm sm:text-base text-zinc-400 max-w-xl mx-auto">
+   344→            粘贴 GitHub 链接或任意网址,本站充当临时代理服务器为你流式加速转发:
+   345→            Releases、仓库压缩包、Raw 文件、Gist 与 git clone 全支持。
+   346→            还能整页代理浏览任意网站 —— 页内链接与 JS 动态资源自动钩住改写,冲浪不跳出。
+   347→          </p>
+   348→        </section>
+   349→
+   350→        {/* 输入卡片 */}
+   351→        <Card className="p-4 sm:p-6 border-white/[0.08] bg-zinc-900/60 backdrop-blur shadow-2xl shadow-black/40">
+   352→          <div className="flex flex-col sm:flex-row gap-3">
+   353→            <div className="relative flex-1">
+   354→              <Github className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+   355→              <Input
+   356→                value={input}
+   357→                onChange={(e) => setInput(e.target.value)}
+   358→                placeholder="粘贴 GitHub 链接或任意网址,如 https://github.com/user/repo/releases/download/..."
+   359→                className="pl-9 h-11 font-mono text-xs sm:text-sm bg-zinc-950/70 border-white/10 focus-visible:ring-emerald-500/50 placeholder:text-zinc-600 placeholder:font-sans"
+   360→                aria-label="加速链接输入框"
+   361→                autoFocus
+   362→              />
+   363→            </div>
+   364→            <Button
+   365→              onClick={() => analyze(input)}
+   366→              disabled={analyzing || !input.trim()}
+   367→              className="h-11 px-6 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-semibold transition-colors min-w-28"
+   368→            >
+   369→              {analyzing ? (
+   370→                <>
+   371→                  <Loader2 className="w-4 h-4 animate-spin" /> 解析中
+   372→                </>
+   373→              ) : (
+   374→                <>
+   375→                  <Zap className="w-4 h-4" /> 解析链接
+   376→                </>
+   377→              )}
+   378→            </Button>
+   379→          </div>
+   380→
+   381→          {/* 示例快捷填充 */}
+   382→          <div className="flex flex-wrap items-center gap-2 mt-4">
+   383→            <span className="text-xs text-zinc-500">试试:</span>
+   384→            {EXAMPLES.map((ex) => {
+   385→              const Icon = ex.icon;
+   386→              return (
+   387→                <button
+   388→                  key={ex.label}
+   389→                  onClick={() => setInput(ex.url)}
+   390→                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-white/10 bg-white/[0.03] text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40 hover:bg-emerald-500/10 transition-colors cursor-pointer"
+   391→                >
+   392→                  <Icon className="w-3 h-3" />
+   393→                  {ex.label}
+   394→                </button>
+   395→              );
+   396→            })}
+   397→          </div>
+   398→        </Card>
+   399→
+   400→        {/* 解析结果 */}
+   401→        <section aria-live="polite" className="mt-6">
+   402→          {analyzing && !result && (
+   403→            <Card className="p-5 border-white/[0.08] bg-zinc-900/40 space-y-3">
+   404→              <Skeleton className="h-5 w-2/3 bg-white/[0.06]" />
+   405→              <Skeleton className="h-4 w-1/3 bg-white/[0.06]" />
+   406→              <Skeleton className="h-10 w-full bg-white/[0.06]" />
+   407→            </Card>
+   408→          )}
+   409→
+   410→          {result && result.valid === false && input.trim() !== '' && !analyzing && (
+   411→            <Card className="p-5 border-red-500/25 bg-red-500/[0.04]">
+   412→              <p className="text-sm text-red-300">❌ {result.error ?? '无法识别的链接'}</p>
+   413→            </Card>
+   414→          )}
+   415→
+   416→          {result?.valid && !analyzing && (
+   417→            <Card className="overflow-hidden border-white/[0.08] bg-zinc-900/60 backdrop-blur">
+   418→              <div className="p-4 sm:p-5">
+   419→                <div className="flex items-start justify-between gap-3 flex-wrap">
+   420→                  <div className="flex items-center gap-3 min-w-0">
+   421→                    <div className="shrink-0 w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-center">
+   422→                      {(() => {
+   423→                        const Icon = TYPE_ICONS[result.type ?? 'other'] ?? FileText;
+   424→                        return <Icon className="w-5 h-5 text-emerald-300" />;
+   425→                      })()}
+   426→                    </div>
+   427→                    <div className="min-w-0">
+   428→                      <p className="font-medium truncate" title={result.fileName ?? ''}>
+   429→                        {result.fileName ?? `${result.owner}/${result.repo}`}
+   430→                      </p>
+   431→                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+   432→                        {result.type && (
+   433→                          <Badge
+   434→                            variant="outline"
+   435→                            className={`text-[11px] px-1.5 py-0 ${
+   436→                              TYPE_BADGE_STYLES[result.type] ?? ''
+   437→                            }`}
+   438→                          >
+   439→                            {result.typeLabel}
+   440→                          </Badge>
+   441→                        )}
+   442→                        <span className="text-xs text-zinc-500">
+   443→                          {result.type === 'docker' ? `registry: ${result.owner ?? ''}` : formatBytes(result.sizeBytes)}
+   444→                        </span>
+   445→                        {result.owner && result.repo && result.type !== 'docker' && (
+   446→                          <a
+   447→                            href={result.sourceUrl}
+   448→                            target="_blank"
+   449→                            rel="noopener noreferrer"
+   450→                            className="text-xs text-zinc-500 hover:text-emerald-300 underline underline-offset-2 decoration-zinc-700 truncate max-w-45 inline-block"
+   451→                          >
+   452→                            {result.owner}/{result.repo}
+   453→                          </a>
+   454→                        )}
+   455→                      </div>
+   456→                    </div>
+   457→                  </div>
+   458→                  <Button
+   459→                    onClick={handleDownload}
+   460→                    className="bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-semibold px-6 h-10 shadow-lg shadow-emerald-500/20"
+   461→                  >
+   462→                    {result.type === 'docker' ? (
+   463→                      <>
+   464→                        <Terminal className="w-4 h-4" />
+   465→                        复制 pull 命令
+   466→                      </>
+   467→                    ) : (
+   468→                      <>
+   469→                        <Download className="w-4 h-4" />
+   470→                        {downloaded ? '再次下载' : '立即下载'}
+   471→                      </>
+   472→                    )}
+   473→                  </Button>
+   474→                </div>
+   475→
+   476→                {/* 加速链接 + 操作 */}
+   477→                <div className="mt-4 rounded-lg border border-white/[0.08] bg-zinc-950/80 p-3">
+   478→                  <div className="flex items-center justify-between gap-2 mb-1.5">
+   479→                    <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-medium flex items-center gap-1">
+   480→                      <ShieldCheck className="w-3 h-3 text-emerald-400" /> 加速直链(可直接分享)
+   481→                    </span>
+   482→                  </div>
+   483→                  <div className="flex items-center gap-2">
+   484→                    <code className="flex-1 text-xs font-mono text-emerald-300/90 truncate block select-all">
+   485→                      {proxyFullUrl}
+   486→                    </code>
+   487→                    <div className="flex items-center gap-1 shrink-0">
+   488→                      <Button
+   489→                        variant="ghost"
+   490→                        size="sm"
+   491→                        className="h-7 w-7 p-0 text-zinc-400 hover:text-emerald-300 hover:bg-white/5"
+   492→                        onClick={() => copyText(proxyFullUrl)}
+   493→                        aria-label="复制加速链接"
+   494→                      >
+   495→                        <Copy className="w-3.5 h-3.5" />
+   496→                      </Button>
+   497→                      <Button
+   498→                        variant="ghost"
+   499→                        size="sm"
+   500→                        className="h-7 w-7 p-0 text-zinc-400 hover:text-emerald-300 hover:bg-white/5"
+   501→                        onClick={() => window.open(proxyFullUrl, '_blank')}
+   502→                        aria-label="新窗口打开加速链接"
+   503→                      >
+   504→                        <Link2 className="w-3.5 h-3.5" />
+   505→                      </Button>
+   506→                    </div>
+   507→                  </div>
+   508→                </div>
+   509→
+   510→                {/* 命令行片段 */}
+   511→                {snippets.length > 0 && (
+   512→                  <Tabs defaultValue={snippets[0]?.id} className="mt-4">
+   513→                    <div className="flex items-center justify-between gap-2 flex-wrap">
+   514→                      <TabsList className="bg-zinc-950/80 border border-white/[0.08] h-8 p-0.5">
+   515→                        {snippets.map((s) => (
+   516→                          <TabsTrigger
+   517→                            key={s.id}
+   518→                            value={s.id}
+   519→                            className="text-xs h-7 px-3 data-[state=active]:bg-emerald-500/15 data-[state=active]:text-emerald-300 gap-1"
+   520→                          >
+   521→                            <Terminal className="w-3 h-3" /> {s.label}
+   522→                          </TabsTrigger>
+   523→                        ))}
+   524→                      </TabsList>
+   525→                    </div>
+   526→                    {snippets.map((s) => (
+   527→                      <TabsContent key={s.id} value={s.id}>
+   528→                        <div className="relative rounded-lg border border-white/[0.08] bg-zinc-950/90 p-3 pr-24 overflow-hidden">
+   529→                          <pre className="text-xs font-mono text-zinc-300 whitespace-pre-wrap break-all leading-relaxed scrollbar-thin overflow-x-auto max-h-32 overflow-y-auto">
+   530→                            {s.code}
+   531→                          </pre>
+   532→                          <button
+   533→                            onClick={() => copyText(s.code)}
+   534→                            className="absolute right-2 top-2 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-white/10 bg-white/5 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors cursor-pointer"
+   535→                          >
+   536→                            <Copy className="w-3 h-3" /> 复制
+   537→                          </button>
+   538→                        </div>
+   539→                      </TabsContent>
+   540→                    ))}
+   541→                  </Tabs>
+   542→                )}
+   543→              </div>
+   544→            </Card>
+   545→          )}
+   546→        </section>
+   547→
+   548→        {/* 支持类型说明 */}
+   549→        <section className="mt-10">
+   550→          <h3 className="text-sm font-semibold text-zinc-400 mb-3 flex items-center gap-2">
+   551→            <span className="w-1 h-3.5 rounded bg-emerald-400 inline-block" />
+   552→            支持的链接类型
+   553→          </h3>
+   554→          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   555→            {[
+   556→              { icon: Package, title: 'Releases 文件', desc: '发布版二进制与安装包', color: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' },
+   557→              { icon: Archive, title: '仓库压缩包', desc: '分支 / 标签源码 zip、tar.gz', color: 'text-amber-300 bg-amber-500/10 border-amber-500/20' },
+   558→              { icon: FileText, title: 'Raw 文件', desc: 'raw.githubusercontent 直链文件', color: 'text-sky-300 bg-sky-500/10 border-sky-500/20' },
+   559→              { icon: Braces, title: 'Gist 片段', desc: 'gist 上的代码片段文件', color: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20' },
+   560→              { icon: GitBranch, title: 'Git Clone', desc: '智能 HTTP 协议透传克隆', color: 'text-teal-300 bg-teal-500/10 border-teal-500/20' },
+   561→              { icon: Globe, title: '整页代理浏览', desc: '页面内链接与 JS 动态资源自动钩住改写', color: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
+   562→              { icon: Zap, title: '断点续传', desc: '透明转发 Range 分段请求', color: 'text-orange-300 bg-orange-500/10 border-orange-500/20' },
+   563→              { icon: ShieldCheck, title: '任意域名', desc: '不限 GitHub 系域名,全网站均可代理', color: 'text-lime-300 bg-lime-500/10 border-lime-500/20' },
+   564→            ].map((t) => (
+   565→              <Card
+   566→                key={t.title}
+   567→                className="p-4 border-white/[0.06] bg-white/[0.02] hover:border-emerald-500/25 hover:bg-emerald-500/[0.03] transition-colors"
+   568→              >
+   569→                <div className={`w-8 h-8 rounded-lg border flex items-center justify-center mb-3 ${t.color}`}>
+   570→                  <t.icon className="w-4 h-4" />
+   571→                </div>
+   572→                <p className="text-sm font-medium">{t.title}</p>
+   573→                <p className="text-xs text-zinc-500 mt-1">{t.desc}</p>
+   574→              </Card>
+   575→            ))}
+   576→          </div>
+   577→        </section>
+   578→
+   579→        {/* 数据统计 */}
+   580→        <section className="mt-10 grid grid-cols-2 lg:grid-cols-4 gap-3">
+   581→          {[
+   582→            { label: '累计请求', value: stats ? String(stats.totalRequests) : '—' },
+   583→            { label: '累计传输量', value: stats ? formatBytes(stats.totalBytes) : '—' },
+   584→            { label: '今日请求', value: stats ? String(stats.todayRequests) : '—' },
+   585→            { label: '覆盖仓库', value: stats ? String(stats.reposServed) : '—' },
+   586→          ].map((s) => (
+   587→            <Card key={s.label} className="p-4 border-white/[0.06] bg-white/[0.02] text-center">
+   588→              <p className="text-xl sm:text-2xl font-bold text-emerald-300 font-mono tabular-nums">
+   589→                {s.value}
+   590→              </p>
+   591→              <p className="text-xs text-zinc-500 mt-1">{s.label}</p>
+   592→            </Card>
+   593→          ))}
+   594→        </section>
+   595→
+   596→        {/* 历史记录 */}
+   597→        <section className="mt-10">
+   598→          <div className="flex items-center justify-between mb-3">
+   599→            <h3 className="text-sm font-semibold text-zinc-400 flex items-center gap-2">
+   600→              <span className="w-1 h-3.5 rounded bg-emerald-400 inline-block" />
+   601→              最近加速记录
+   602→            </h3>
+   603→            <Button
+   604→              variant="ghost"
+   605→              size="sm"
+   606→              onClick={refreshData}
+   607→              className="h-7 text-xs text-zinc-500 hover:text-emerald-300 hover:bg-white/5"
+   608→            >
+   609→              刷新
+   610→            </Button>
+   611→          </div>
+   612→          <Card className="border-white/[0.06] bg-white/[0.02] overflow-hidden">
+   613→            {history.length === 0 ? (
+   614→              <div className="py-14 text-center text-sm text-zinc-600">
+   615→                <History className="w-8 h-8 mx-auto mb-3 opacity-40" />
+   616→                暂无下载记录,下载一条试试吧
+   617→              </div>
+   618→            ) : (
+   619→              <ul className="divide-y divide-white/[0.05] max-h-96 overflow-y-auto scrollbar-thin">
+   620→                {history.map((r) => {
+   621→                  const Icon = TYPE_ICONS[r.type] ?? FileText;
+   622→                  const isErr = r.status !== 'ok';
+   623→                  return (
+   624→                    <li key={r.id} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03] transition-colors">
+   625→                      <div
+   626→                        className={`shrink-0 w-8 h-8 rounded-md border flex items-center justify-center ${
+   627→                          isErr
+   628→                            ? 'border-red-500/30 bg-red-500/10 text-red-300'
+   629→                            : 'border-white/10 bg-white/[0.03] text-emerald-300'
+   630→                        }`}
+   631→                      >
+   632→                        <Icon className="w-3.5 h-3.5" />
+   633→                      </div>
+   634→                      <div className="flex-1 min-w-0">
+   635→                        <p className="text-sm truncate">
+   636→                          {isErr
+   637→                            ? `下载失败:${r.owner ? `${r.owner}/${r.repo}` : r.sourceUrl}`
+   638→                            : r.fileName ?? r.sourceUrl}
+   639→                        </p>
+   640→                        <p className="text-[11px] text-zinc-600 font-mono truncate">{r.sourceUrl}</p>
+   641→                      </div>
+   642→                      <div className="shrink-0 text-right hidden sm:block">
+   643→                        <p className="text-xs text-zinc-500">{formatBytes(r.sizeBytes)}</p>
+   644→                        <p className="text-[11px] text-zinc-600">{timeAgo(r.createdAt)}</p>
+   645→                      </div>
+   646→                      {!isErr && (
+   647→                        <Button
+   648→                          variant="ghost"
+   649→                          size="sm"
+   650→                          className="shrink-0 h-7 w-7 p-0 text-zinc-500 hover:text-emerald-300 hover:bg-white/5"
+   651→                          onClick={() => copyText(`${window.location.origin}${r.proxyPath}`, '已复制加速链接')}
+   652→                          aria-label="复制该条记录的加速链接"
+   653→                        >
+   654→                          <Copy className="w-3.5 h-3.5" />
+   655→                        </Button>
+   656→                      )}
+   657→                    </li>
+   658→                  );
+   659→                })}
+   660→              </ul>
+   661→            )}
+   662→          </Card>
+   663→        </section>
+   664→      </main>
+   665→
+   666→      {/* 页脚(始终吸底) */}
+   667→      <footer className="mt-auto border-t border-white/[0.06] pb-[env(safe-area-inset-bottom)]">
+   668→        <div className="max-w-4xl mx-auto px-4 py-6 text-center text-xs text-zinc-600 space-y-1">
+   669→          <p>
+   670→            GHFast · 由 Next.js 流式反向代理驱动 · 支持任意域名整页代理浏览,请勿滥用
+   671→          </p>
+   672→          <p>流量为本站临时转发,商用与大额持续负载请自建镜像</p>
+   673→        </div>
+   674→      </footer>
+   675→    </div>
+   676→  );
+   677→}
+   678→
