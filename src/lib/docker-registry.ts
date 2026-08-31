@@ -88,6 +88,32 @@ export function defaultChallenge(host: string): { realm: string; service: string
   return DEFAULT_CHALLENGES[host] ?? { realm: `https://${host}/v2/token`, service: host };
 }
 
+/** 是否 Docker Hub 家族域名(ping 默认 challenge 的归属) */
+export function isDockerHubHostName(host: string): boolean {
+  return DOCKER_HUB_HOSTS.has(host.toLowerCase()) || host.toLowerCase() === 'auth.docker.io';
+}
+
+/**
+ * 从 token scope 推断上游 registry 域:
+ * daemon 拉 <本站>/ghcr.io/o/r 时请求的 scope 是 repository:ghcr.io/o/r:pull,
+ * 首段 ghcr.io 即真实上游。返回 null 表示无域前缀(Docker Hub)。
+ */
+export function inferRegistryFromScope(scope: string | null): string | null {
+  if (!scope) return null;
+  for (const item of scope.split(/\s+/)) {
+    const m = /^repository:([^:]+):/i.exec(item);
+    if (!m) continue;
+    const repo = m[1];
+    if (!repo.includes('/')) return null; // Hub 短名/单段名
+    const first = repo.split('/')[0];
+    if (first.includes('.') || first.includes(':') || first.toLowerCase() === 'localhost') {
+      return first.toLowerCase();
+    }
+    return null;
+  }
+  return null;
+}
+
 /** 是否 Docker Hub 家族的 auth 端点(决定 scope 是否做 library/ 归一化) */
 function isHubAuthHost(realmHost: string, service: string): boolean {
   const h = realmHost.toLowerCase();

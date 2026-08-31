@@ -9,6 +9,8 @@ import {
   buildAuthUrl,
   registryErrorJson,
   defaultChallenge,
+  inferRegistryFromScope,
+  isDockerHubHostName,
 } from '@/lib/docker-registry';
 
 export const runtime = 'nodejs';
@@ -133,18 +135,30 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
   /* ---------- token 端点:GET /v2/auth?realm=... ---------- */
   if (pathSegs[0] === 'auth' && pathSegs.length === 1) {
     const realmParam = req.nextUrl.searchParams.get('realm');
-    const service = req.nextUrl.searchParams.get('service') ?? undefined;
+    const serviceParam = req.nextUrl.searchParams.get('service') ?? undefined;
     let scope = req.nextUrl.searchParams.get('scope');
-    let authUrl: string | null = null;
 
-    if (realmParam) {
-      const realmUrl = new URL(realmParam);
-      const normalized = normalizeScope(scope, realmUrl.hostname, service ?? '');
+    /* scope 驱动的上游推断:
+     * ping 的 challenge 固定指向 Docker Hub,但 daemon 拉 <本站>/ghcr.io/o/r 时
+     * 请求的 scope 是 repository:ghcr.io/o/r:pull —— 必须按 scope 前缀改签对应上游
+     * token,否则 Hub token 打 GHCR 会被 403 DENIED(daemon 只在 401 重试,403 直接失败)。 */
+    let realm = realmParam ?? defaultChallenge('registry-1.docker.io').realm;
+    let service = serviceParam ?? 'registry.docker.io';
+    const scopeHost = inferRegistryFromScope(scope);
+    if (scopeHost && !isDockerHubHostName(scopeHost)) {
+      const up = defaultChallenge(scopeHost);
+      realm = up.realm;
+      service = up.service;
+    }
+
+    let authUrl: string | null = null;
+    try {
+      const realmUrl = new URL(realm);
+      const normalized = normalizeScope(scope, realmUrl.hostname, service);
       if (normalized !== scope) scope = normalized;
-      authUrl = buildAuthUrl(realmParam, service, scope);
-    } else {
-      const def = defaultChallenge('registry-1.docker.io');
-      authUrl = buildAuthUrl(def.realm, service ?? def.service, normalizeScope(scope, 'auth.docker.io', service ?? 'registry.docker.io'));
+      authUrl = buildAuthUrl(realm, service, scope);
+    } catch {
+      authUrl = null;
     }
     if (!authUrl) {
       return NextResponse.json(registryErrorJson('DENIED', 'invalid auth realm'), { status: 400 });
