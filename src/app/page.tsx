@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Archive,
   Braces,
   Check,
@@ -184,6 +185,8 @@ export default function HomePage() {
   const [downloaded, setDownloaded] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checkRes, setCheckRes] = useState<DockerCheckResult | null>(null);
+  /** null=未知(探测失败/未完成);true=平台边缘拦截 HEAD,docker pull 不可用 */
+  const [headBlocked, setHeadBlocked] = useState<boolean | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCheckedRef = useRef('');
 
@@ -256,6 +259,24 @@ export default function HomePage() {
     lastCheckedRef.current = ref;
     void checkImage();
   }, [result, checkImage]);
+
+  // 运行时探测托管平台边缘是否拦截 HTTP HEAD:
+  // 应用匿名 ping /v2/ 固定回 401;若 HEAD 得到 403 说明请求被边缘拒绝、未到应用。
+  // 新版 Docker(containerd)拉取镜像的第一步就是 HEAD manifest,被拦则 docker pull 必败
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch('/v2/', { method: 'HEAD', cache: 'no-store' });
+        if (alive) setHeadBlocked(res.status === 403);
+      } catch {
+        if (alive) setHeadBlocked(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const proxyFullUrl = useMemo(() => {
     if (!result?.valid) return '';
@@ -405,6 +426,35 @@ export default function HomePage() {
         : []),
     ];
   }, [proxyFullUrl, fileNameForCmd, result, origin, dockerPullCmd, dockerDigestCmd]);
+
+  /** HEAD 被平台边缘拦截时的替代拉取方案(纯 GET 客户端 / 自托管) */
+  const headBlockedSnippets = useMemo(() => {
+    const host = siteHost || 'your-ghfast-host';
+    const accelRef =
+      result?.type === 'docker' && dockerPullCmd
+        ? dockerPullCmd.replace(/^docker pull /, '')
+        : `${host}/ghcr.io/owner/repo:tag`;
+    const remoteRef = accelRef.startsWith(`${host}/`)
+      ? accelRef.slice(host.length + 1)
+      : accelRef;
+    return [
+      {
+        id: 'selfhost',
+        label: '① 自托管(推荐 · 完整 docker pull)',
+        code: `# 在你自己的服务器上部署 GHFast(无边缘限制,HEAD/Range 全支持)\ncurl -fsSL ${host}/install.sh | bash\n# 之后即可:docker pull 127.0.0.1:3000/${remoteRef}`,
+      },
+      {
+        id: 'crane',
+        label: '② crane 纯 GET 拉取(本站可用)',
+        code: `crane pull --platform=linux/amd64 ${accelRef} image.tar && docker load -i image.tar`,
+      },
+      {
+        id: 'skopeo',
+        label: '③ skopeo 直接入 daemon(本站可用)',
+        code: `skopeo copy docker://${accelRef} docker-daemon:${remoteRef}`,
+      },
+    ];
+  }, [siteHost, result, dockerPullCmd]);
 
   return (
     <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100 relative overflow-x-hidden">
@@ -689,6 +739,45 @@ export default function HomePage() {
                         <p className="text-amber-300 break-all">⚠ {checkRes.error ?? '检测失败'}</p>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {/* HEAD 被平台边缘拦截:docker pull 不可用,展示替代方案 */}
+                {result.type === 'docker' && headBlocked === true && (
+                  <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3">
+                    <p className="text-xs font-medium text-amber-300 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      检测到托管平台边缘网关拦截 HTTP HEAD 请求 —— docker pull 在本站此环境不可用
+                    </p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                      新版 Docker(containerd)拉取镜像的第一步是 HEAD 请求,该请求被平台边缘直接 403
+                      拒绝、未到达本应用(GitHub 文件加速不受影响)。可用下方替代方案:
+                    </p>
+                    <div className="mt-2 space-y-2">
+                      {headBlockedSnippets.map((s) => (
+                        <div
+                          key={s.id}
+                          className="relative rounded-md border border-white/[0.08] bg-zinc-950/90 p-2.5 pr-20"
+                        >
+                          <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">
+                            {s.label}
+                          </p>
+                          <pre className="text-[11px] font-mono text-zinc-300 whitespace-pre-wrap break-all leading-relaxed">
+                            {s.code}
+                          </pre>
+                          <button
+                            onClick={() => copyText(s.code)}
+                            className="absolute right-2 top-2 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-white/10 bg-white/5 text-zinc-400 hover:text-amber-300 hover:border-amber-500/40 transition-colors cursor-pointer"
+                          >
+                            <Copy className="w-3 h-3" /> 复制
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[11px] text-zinc-500">
+                      若你是站点管理员:在部署环境配置 GHFAST_PUBLIC_ORIGIN
+                      可修正 token 服务地址;HEAD 拦截需托管平台侧解除。
+                    </p>
                   </div>
                 )}
 

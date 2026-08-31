@@ -105,7 +105,22 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
         cache: 'no-store',
         signal: AbortSignal.timeout(6_000),
       });
-      return new NextResponse(up.body, { status: up.status, headers: pickResponseHeaders(up.headers) });
+      const respHeaders = pickResponseHeaders(up.headers);
+      // token 被上游拒绝时,challenge 必须同样改写 realm 回本站 /v2/auth:
+      // 否则 daemon 直连上游 auth(如 auth.docker.io)拿错 scope 的 token,
+      // 后续 manifests 请求必被真实 registry 403 DENIED(daemon 只重试 401,不重试 403)
+      if (up.status === 401) {
+        const ch = parseWwwAuth(up.headers.get('www-authenticate'));
+        respHeaders.set(
+          'www-authenticate',
+          buildChallenge(
+            requestOrigin,
+            ch.realm ?? defaultChallenge('registry-1.docker.io').realm,
+            ch.service ?? defaultChallenge('registry-1.docker.io').service
+          )
+        );
+      }
+      return new NextResponse(up.body, { status: up.status, headers: respHeaders });
     }
     // 匿名 ping:透传上游拿真实 challenge(realm 改写为本站 /v2/auth)
     let realm = 'https://auth.docker.io/token';
@@ -227,6 +242,17 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
     return NextResponse.json(registryErrorJson('UNAVAILABLE', '上游 registry 不可达'), { status: 502 });
   }
 
+  // 服务端匿名 token 自救:daemon 侧 token 错配(如拿到 Hub token 打 GHCR、
+  // 或边缘环境 challenge 未及改写)时,上游回 401/403 且 daemon 不会重试 403 ——
+  // 这里按真实上游直接换匿名 pull token 重试一次,对客户端完全透明
+  if (
+    upstream.status === 401 ||
+    upstream.status === 403
+  ) {
+    const rescued = await rescueWithAnonymousToken(target, upstream, upstreamUrl, req.method, headers);
+    if (rescued) upstream = rescued;
+  }
+
   // blob/manifest 成功才落库(仅 GET,HEAD 探测不入库);401/404 等错误不记录
   if (
     req.method === 'GET' &&
@@ -254,6 +280,46 @@ async function handleV2(req: NextRequest, ctx: { params: Promise<{ rest?: string
     status: upstream.status,
     headers: respHeaders,
   });
+}
+
+/**
+ * 上游 401/403 时:按上游 challenge(或兜底表)取匿名 pull token 重试一次。
+ * 成功返回新 Response,失败返回 null(维持原响应)。
+ * target.name 已归一化(去 registry 前缀 / Hub 补 library/),可直接入 scope。
+ */
+async function rescueWithAnonymousToken(
+  target: { host: string; name: string },
+  upstream: Response,
+  upstreamUrl: string,
+  method: string,
+  baseHeaders: Record<string, string>
+): Promise<Response | null> {
+  const ch = parseWwwAuth(upstream.headers.get('www-authenticate'));
+  const def = defaultChallenge(target.host);
+  const realm = ch.realm ?? def.realm;
+  const service = ch.service ?? def.service;
+  const authUrl = buildAuthUrl(realm, service, `repository:${target.name}:pull`);
+  if (!authUrl) return null;
+  try {
+    const tokenRes = await fetch(authUrl, {
+      headers: { 'user-agent': 'docker/25-GHFast (+registry-mirror)', accept: 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!tokenRes.ok) return null;
+    const data = (await tokenRes.json()) as { token?: string; access_token?: string };
+    const token = data.token ?? data.access_token;
+    if (!token) return null;
+    return await fetch(upstreamUrl, {
+      method,
+      headers: { ...baseHeaders, authorization: `Bearer ${token}` },
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(300_000),
+    });
+  } catch {
+    return null;
+  }
 }
 
 export {
