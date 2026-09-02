@@ -1,0 +1,63 @@
+name: real-pull-test
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# 真实环境端到端验证:
+#  ① 真实 docker daemon 直拉托管站 ghft.space-z.ai(预期复现用户 403)
+#  ② 抓平台边缘证据:同一 URL HEAD vs GET 行为差异
+#  ③ crane 纯 GET 拉取替代方案(真实机器)
+#  ④ install.sh 自托管 GHFast 后,真实 docker pull 走自托管(GHCR + Hub)
+jobs:
+  real-pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: "① 真实 docker pull 托管站(预期复现 403)"
+        continue-on-error: true
+        run: |
+          docker version --format 'docker client={{.Client.Version}} server={{.Server.Version}}'
+          set -o pipefail
+          docker pull ghft.space-z.ai/ghcr.io/astral-sh/uv:latest 2>&1 | tee /tmp/pull-hosted.log
+
+      - name: "② 平台边缘拦截证据:同一 URL 的 HEAD vs GET"
+        run: |
+          echo '===== HEAD https://ghft.space-z.ai/ ====='
+          curl -sSI -m 15 https://ghft.space-z.ai/ || true
+          echo '===== HEAD /v2/ghcr.io/astral-sh/uv/manifests/latest ====='
+          curl -sSI -m 15 https://ghft.space-z.ai/v2/ghcr.io/astral-sh/uv/manifests/latest || true
+          echo '===== GET 同一 manifest URL(应 401 且到达应用) ====='
+          curl -sS -D- -o /dev/null -m 15 https://ghft.space-z.ai/v2/ghcr.io/astral-sh/uv/manifests/latest || true
+
+      - name: "③ crane 纯 GET 拉取(替代方案,真实机器)"
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/crane.tar.gz https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz
+          tar -xzf /tmp/crane.tar.gz -C /tmp crane
+          sudo mv /tmp/crane /usr/local/bin/crane
+          crane version
+          crane pull --platform=linux/amd64 ghft.space-z.ai/ghcr.io/astral-sh/uv:latest /tmp/uv.tar
+          docker load -i /tmp/uv.tar
+          docker run --rm ghcr.io/astral-sh/uv:latest --version
+
+      - name: "④ 自托管 GHFast(install.sh)+ 真实 docker pull"
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/cshdotcom/ghfast/main/install.sh -o /tmp/install.sh
+          bash /tmp/install.sh --port 3000 --dir "$HOME/ghfast" 2>&1 | tail -25
+          echo '===== 自托管实例健康 ====='
+          curl -sS -o /dev/null -w 'home: %{http_code}\n' http://127.0.0.1:3000/
+          echo '===== 真实 docker pull 走自托管加速(GHCR) ====='
+          docker pull 127.0.0.1:3000/ghcr.io/astral-sh/uv:latest
+          echo '===== 真实 docker pull 走自托管加速(Docker Hub) ====='
+          docker pull 127.0.0.1:3000/library/alpine:latest
+          echo '===== docker images ====='
+          docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}'
+
+      - name: "汇总:托管站 pull 输出"
+        if: always()
+        run: |
+          echo '----- 步骤①托管站 docker pull 完整输出 -----'
+          cat /tmp/pull-hosted.log || true
